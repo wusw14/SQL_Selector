@@ -1,6 +1,7 @@
 import sqlite3
 import sys
 from func_timeout import func_timeout, FunctionTimedOut
+import json
 
 
 def execute_sql_wrapper(sql, db_path, timeout, return_columns: bool = False):
@@ -42,3 +43,25 @@ def execute_sql(sql: str, db_path: str, return_columns: bool = False):
     cursor.close()
     conn.close()
     return result
+
+
+def parse_json(result: str) -> int:
+    start_idx = result.find("{")
+    end_idx = result.rfind("}") + 1
+    result = result[start_idx:end_idx]
+    try:
+        result = json.loads(result)
+        return result
+    except:
+        return result
+
+
+def parse_result(result: str) -> str:
+    start_idx = result.find("{")
+    end_idx = result.rfind("}") + 1
+    result = result[start_idx:end_idx]
+    try:
+        result = json.loads(result)
+        return result["better_sql"]
+    except:
+        return "Unsure"

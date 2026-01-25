@@ -145,6 +145,18 @@ Respond with "Yes" if the execution results of the generated SQL is correct for 
     return res.startswith("Yes")
 
 
+def flatten_tuple(res):
+    flatten_res = []
+    for sublist in res:
+        for item in sublist:
+            if item is not None:
+                if type(item) == str:
+                    flatten_res.append(item.lower())
+                else:
+                    flatten_res.append(item)
+    return flatten_res
+
+
 def eval_sql(gt_res_list, gt_cols_list, res, res_col, args, evidence):
     for gt_res in gt_res_list:
         if frozenset(res) == frozenset(gt_res):
@@ -154,6 +166,11 @@ def eval_sql(gt_res_list, gt_cols_list, res, res_col, args, evidence):
         for gt_res in gt_res_list:
             res_aligned = align_column_with_gt(res, gt_res)
             if frozenset(res_aligned) == frozenset(gt_res):
+                return 1, 1
+            # if flatten into one column and remove the null values, the result is the same as gt_res
+            flatten_res = flatten_tuple(res)
+            flatten_gt = flatten_tuple(gt_res)
+            if frozenset(flatten_res) == frozenset(flatten_gt):
                 return 1, 1
 
     # # llm check

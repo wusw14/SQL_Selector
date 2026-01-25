@@ -203,6 +203,34 @@ def collect_schema_info(table_columns: Dict[str, List[str]], db: Database) -> st
     return schema_info
 
 
+def classify_query_type(question: str) -> int:
+    prompt = f"""Classify the following natural language query into exactly one of these three categories:
+
+Selection of Top/Best/Worst/Most – The query asks to choose the most, least, best, worst, top N, or similar superlative selection from a set.
+Example: “Which product has the highest sales?”, “Show the 5 oldest customers.”
+
+Aggregation of Filtered Results – The query asks to apply an aggregation (e.g., sum, count, average, total) to a filtered subset of data.
+Example: “What is the total revenue from Europe last year?”, “Count the number of pending orders.”
+
+Other Record Retrieval – The query asks to return all records (or a filtered set) that match given conditions, without aggregation or top/best selection.
+Example: “List all customers from Germany.”, “Show orders placed in January.”
+
+**NL query:**
+{question}
+
+Respond only with the category number (1, 2, or 3). Do not include explanations.
+"""
+    res = llm_check([prompt])[0]
+    if res.startswith("1"):
+        return 1
+    elif res.startswith("2"):
+        return 2
+    elif res.startswith("3"):
+        return 3
+    else:
+        return 3
+
+
 def understand_sql(
     sql_node: SQLNode,
     question: str,

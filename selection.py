@@ -1,5 +1,5 @@
 from parser import SQLCollection, SQLNode
-from utils import execute_sql, execute_sql_wrapper
+from utils import execute_sql, execute_sql_wrapper, parse_result
 from typing import Dict, List, Any, Tuple
 from database import Database
 from sqlglot import parse_one, exp
@@ -16,6 +16,15 @@ from syntax import generate_join_note
 from execution import generate_exec_note
 from collections import defaultdict
 import pandas as pd
+import numpy as np
+from comparison_note import (
+    same_returned_columns,
+    gen_col_comparison_note,
+    gen_group_by_note,
+    gen_order_by_note,
+    gen_filtering_logic_note,
+)
+from aspect import Aspect
 
 
 def create_view(
@@ -59,10 +68,9 @@ def generate_returned_columns_prompt(
     question: str, evidence: str, schema_note: str, sql_node: SQLNode
 ) -> str:
     # prompt for asking the LLM to explain each returned column
-    prompt = f"""You are given a natural language query (NL Query), optional supporting evidence that clarifies the intent of the query, the database schema, the column names returned by a SQL query and the SQL query itself. Your task is to briefly describe each returned column with respect to the NL Query, evidence and schema.
+    prompt = f"""You are given the database schema, optional supporting evidence, the column names returned by a SQL query and the SQL query itself. Your task is to briefly describe each returned column with respect to the NL Query, evidence and schema.
     
 Input Format:
-NL Query: {question}
 Evidence: {evidence}
 Schema: {schema_note}
 SQL: {sql_node.org_sql}
@@ -82,24 +90,33 @@ def generate_evidence_alignment_prompt(
     question: str, evidence: str, schema_note: str, sql_node: SQLNode
 ) -> str:
     # prompt for asking the LLM to identify the parts in the SQL that is relevant to the evidence, and determine whether the operation in the SQL is consistent with the evidence.
-    prompt = f"""You are given a natural language query (NL Query), optional supporting evidence that clarifies the intent of the query, the database schema, the column names returned by a SQL query and the SQL query itself. Your task is to identify the parts in the SQL that is relevant to the evidence, and determine whether the operation in the SQL is consistent with the evidence.
+    prompt = f"""You are given an evidence statement, a database schema, and a SQL query. Your task is to identify only the parts that are mutually relevant between the evidence and the SQL, and assess their consistency.
 
-You should follow the two steps:
-1. Identify the parts in the SQL that is relevant to the evidence.
-2. Determine whether the operation in the SQL is consistent with the evidence.
+Guidelines:
+1. The evidence provides supplementary context—it does not need to mention everything in the SQL, and the SQL does not need to include everything from the evidence.
+2. Only when the SQL and the evidence refer to the same fact or condition, they must not contradict each other.
+3. Focus your analysis only on parts of the SQL that correspond to claims or details explicitly stated in the evidence.
+4. Extract the claims from the evidence and the relevant parts from the SQL, and then assess their consistency.
+5. If the evidence specifies the filtering conditions, the SQL should have the same filtering conditions.
+6. Numerical and computational precision matters: Pay close attention to how quantities are defined. Any mismatch in such definitions constitutes a logical inconsistency.
     
 Input Format:
-NL Query: {question}
 Evidence: {evidence}
 Schema: {schema_note}
 SQL: {sql_node.org_sql}
 
 Output Format:
+A list of aligned claim pairs in the following format:
+[
 {{
-    "analysis": "Briefly explain your reasoning process.",
-    "consistent": "Yes/No/Unsure",
-}}
+"evidence_claim": "claim extracted from evidence",
+"sql_clause": "corresponding SQL clause extracted from SQL",
+"consistency": "Yes/No/Unsure"
+}},
+...
+]
 """
+    # "analysis": "briefly summarize the inconsistency if any, otherwise, consistent with the evidence",
     return prompt
 
 
@@ -107,18 +124,17 @@ def generate_filtering_conditions_prompt(
     question: str, evidence: str, schema_note: str, sql_node: SQLNode
 ) -> str:
     # prompt for asking the LLM to identify the filtering conditions, filtering condition separated by "AND", and explain each filtering condition by referring to the NL Query, evidence and schema.
-    prompt = f"""You are given a natural language query (NL Query), optional supporting evidence that clarifies the intent of the query, the database schema, the column names returned by a SQL query and the SQL query itself. Your task is to identify the filtering conditions, filtering condition separated by "AND", and explain each filtering condition by referring to the NL Query, evidence and schema.
+    prompt = f"""You are given the database schema, optional supporting evidence and the SQL query. Your task is to extract each atomic filtering condition from the WHERE clause of the SQL query (split by AND), and for each one, provide a clear, concise and brief description by referring to the evidence and schema. Your output should be a json dictionary with the extracted condition from the SQL as the key and the brief description as the value. For example, {{"num > 100": "The number of the item is greater than 100"}}.
     
 Input Format:
-NL Query: {question}
-Evidence: {evidence}
 Schema: {schema_note}
+Evidence: {evidence}
 SQL: {sql_node.org_sql}
 
 Output Format:
 {{
-    "Condition 1": "Briefly explain the filtering condition 1",
-    "Condition 2": "Briefly explain the filtering condition 2",
+    "extracted_condition_1": "Brief description of the extracted condition 1 from the SQL",
+    "extracted_condition_2": "Brief description of the extracted condition 2 from the SQL",
     ...
 }}
 """
@@ -135,6 +151,7 @@ def pointwise_selection(
     returned_columns_prompts = []
     evidence_alignment_prompts = []
     filtering_conditions_prompts = []
+    filtred_sql_nodes = []
     for sql_node in sql_nodes:
         # update the tables and columns for each node
         for node in sql_node.subsql_nodes:
@@ -155,11 +172,11 @@ def pointwise_selection(
                 question, evidence, schema_note, sql_node
             )
         )
-        filtering_conditions_prompts.append(
-            generate_filtering_conditions_prompt(
-                question, evidence, schema_note, sql_node
-            )
-        )
+        # filtering_conditions_prompts.append(
+        #     generate_filtering_conditions_prompt(
+        #         question, evidence, schema_note, sql_node
+        #     )
+        # )
         sql_node.warning_cnt = (
             exec_warning_cnt + join_warning_cnt
         )  # + intent_warning_cnt
@@ -174,59 +191,46 @@ def pointwise_selection(
         evidence_alignment_notes = llm_check(evidence_alignment_prompts)
     else:
         evidence_alignment_notes = [None] * len(sql_nodes)
-    filtering_conditions_notes = llm_check(filtering_conditions_prompts)
+    # filtering_conditions_notes = llm_check(filtering_conditions_prompts)
     for (
         sql_node,
         returned_columns_note,
         evidence_alignment_note,
-        filtering_conditions_note,
+        # filtering_conditions_note,
     ) in zip(
         sql_nodes,
         returned_columns_notes,
         evidence_alignment_notes,
-        filtering_conditions_notes,
+        # filtering_conditions_notes,
     ):
         sql_node.notes["returned_columns_note"] = returned_columns_note
         if evidence_alignment_note is not None:
             sql_node.notes["evidence_alignment_note"] = evidence_alignment_note
-        sql_node.notes["filtering_conditions_note"] = filtering_conditions_note
-    return sql_nodes
+            sql_node.evidence_alignment_score = update_evidence_alignment_score(
+                evidence_alignment_note
+            )
+        if sql_node.evidence_alignment_score > 0 and sql_node.warning_cnt < 100:
+            filtred_sql_nodes.append(sql_node)
+        # sql_node.notes["filtering_conditions_note"] = filtering_conditions_note
+    return filtred_sql_nodes
 
 
-def get_col_comparison_prompt(
-    question: str,
-    evidence: str,
-    schema_note: str,
-    sql_node1: SQLNode,
-    sql_node2: SQLNode,
-) -> str:
-    prompt = f"""You are given a natural language (NL) query, optional supporting evidence that clarifies the intent of the query, the database schema, and the column names returned by two candidate SQL queries (SQL1 and SQL2).
-
-Your task is to determine which SQL query returns a more appropriate set of columns with respect to the NL query and evidence. Your goal is to identify ABSOLUTELY UNREASONABLE cases, not to choose the slightly better one when both are reasonable. If both SQLs return reasonable columns, return "Both". If neither is reasonable, return "Neither"; otherwise, return the more appropriate SQL query.
-
-Guidelines:
-- Prefer keeping the separate columns to concatenating them into one column unless explicitly required by the NL query.
-- Reject UNIONs of semantically different columns—they must be distinct and meaningful.
-- If the NL query does not explicitly ask for the name, prefer ID over names.
-- It is acceptable to return more columns than the NL query asks for.
-
-Input Format:
-NL Query: {question}
-Evidence (optional): {evidence}
-Schema: {schema_note}
-
-SQL1 returns columns: {sql_node1.exec_columns}
-SQL1: {sql_node1.org_sql}
-SQL2 returns columns: {sql_node2.exec_columns}
-SQL2: {sql_node2.org_sql}
-
-Ouput Format:
-{{
-    "reason": "Briefly explain your reasoning process on whether the returned columns of SQL1 and SQL2 are appropriate or not, respectively.",
-    "better_sql": "SQL1/SQL2/Both/Neither",
-}}
-"""
-    return prompt
+def update_evidence_alignment_score(evidence_alignment_note: str) -> float:
+    try:
+        evidence_res = json.loads(evidence_alignment_note)
+        evidence_consistency = {}
+        for item in evidence_res:
+            if item["evidence_claim"] not in evidence_consistency:
+                evidence_consistency[item["evidence_claim"]] = 0
+            if not item["consistency"].startswith("No"):
+                evidence_consistency[item["evidence_claim"]] += 1
+        min_consistency = min(evidence_consistency.values())
+        if min_consistency == 0:
+            return 0
+        else:
+            return 1
+    except:
+        return 1
 
 
 def get_evidence_alignment_prompt(
@@ -282,8 +286,14 @@ Input Format:
 NL Query: {question}
 Evidence: {evidence}
 Schema: {schema_note}
+
 SQL1: {sql_node1.org_sql}
+Notes on filtering conditions of SQL1:
+{sql_node1.notes["filtering_conditions_note"]}
+
 SQL2: {sql_node2.org_sql}
+Notes on filtering conditions of SQL2:
+{sql_node2.notes["filtering_conditions_note"]}
 
 Ouput Format:
 {{
@@ -300,17 +310,14 @@ def get_overall_comparison_prompt(
     schema_note: str,
     sql_node1: SQLNode,
     sql_node2: SQLNode,
+    comparison_note_dict: Dict[str, str],
 ) -> str:
     # compare the two SQLs with different execution results
-    prompt = f"""You are given a natural language query (NL Query) and two SQL statements that produce different results when executed. Analyze and determine which SQL is more aligned with the intent of the NL Query. Identify key differences in operations between the two SQL statements (e.g., filtering conditions, sorting, aggregation) and focus on the aspects that lead to the different results. Analyze which SQL appears more reliable based on these differences.
+    prompt = f"""You are given a natural language query (NL Query) and two SQL statements that produce different results when executed. Your task is to analyze and determine which SQL better aligns with the intent of the NL Query by focusing on their core differences. 
 
 Additional guidelines:
-1. If the NL Query involves finding the "most XX" (e.g., maximum, minimum), prioritize SQL that uses MAX/MIN as it is more robust than using ORDER BY with LIMIT, especially in tied scenarios. Next, consider SQL with ORDER BY + LIMIT, ensuring the presence of LIMIT to guarantee a unique result.
+1. Prefer the SQL that returns all the records that satisfy the NL query.
 2. If the NL Query asks for the rank of the result, prefer RANK() over ROW_NUMBER() as it is more appropriate for ranking.
-3. Prefer ID over names if NL query does not explicitly ask for the name.
-4. Prefer the SQL that uses less tables if the information is sufficient.
-5. Prefer the SQL that uses separate columns over concatenating them into one column unless explicitly required by the NL query.
-6. Reject UNIONs of semantically different columns—they must be distinct and meaningful.
 
 **NL query:**
 {question}
@@ -319,26 +326,38 @@ Additional guidelines:
 **Evidence:**
 {evidence}
 
-**SQL1:**
-[SQL]: 
-{sql_node1.org_sql}
-[Execution Result]:
-{sql_node1.notes["exec_note"]}
-[Join Note]:
-{sql_node1.notes["join_note"]}
+**SQL1**
+SQL: {sql_node1.org_sql}
+Notes on Execution Results: {sql_node1.notes["exec_note"]}
+"""
+    if sql_node1.notes["join_note"] is not None:
+        prompt += f"Notes on Join Conditions: {sql_node1.notes['join_note']}\n"
+    prompt += f"""\n\n**SQL2**
+SQL: {sql_node2.org_sql}
+Notes on Execution Results: {sql_node2.notes["exec_note"]}
+"""
+    if sql_node2.notes["join_note"] is not None:
+        prompt += f"Notes on Join Conditions: {sql_node2.notes['join_note']}\n"
 
-**SQL2:**
-[SQL]: 
-{sql_node2.org_sql}
-[Execution Result]:
-{sql_node2.notes["exec_note"]}
-[Join Note]:
-{sql_node2.notes["join_note"]}
-
+    prompt += "\n\nCompare the two SQL queries by evaluating them in the following strict priority order:"
+    enum_cnt = 1
+    if "group_by" in comparison_note_dict:
+        prompt += f"\n{enum_cnt}. Group By Clause: {comparison_note_dict['group_by']}"
+        enum_cnt += 1
+    if "order_by" in comparison_note_dict:
+        prompt += f"\n{enum_cnt}. Order By Clause: {comparison_note_dict['order_by']}"
+        enum_cnt += 1
+    prompt += f"\n{enum_cnt}. Filtering Conditions (e.g., WHERE and HAVING clauses)."
+    enum_cnt += 1
+    if "col_comparison" in comparison_note_dict:
+        prompt += (
+            f"\n{enum_cnt}. Returned Columns: {comparison_note_dict['col_comparison']}"
+        )
+    prompt += """
 Please select the better SQL query for the NL query. Your response must be in the following JSON format:
 {{
     "reason": "Briefly explain your reasoning process.",
-    "better_sql": "SQL1/SQL2/Unsure",
+    "better_sql": "SQL1/SQL2/Unsure/Neither",
 }}
 """
     return prompt
@@ -346,64 +365,99 @@ Please select the better SQL query for the NL query. Your response must be in th
 
 def multi_aspect_sql_comparison(
     question: str,
+    query_type: int,
     evidence: str,
     schema_note: str,
     sql_node1: SQLNode,
     sql_node2: SQLNode,
 ) -> Tuple[str, str]:
-    prompt_dict = {}
-    # Aspect 1: returned columns (Final SELECT Clause)
-    if sql_node1.exec_columns != sql_node2.exec_columns:
-        col_comparison_prompt = get_col_comparison_prompt(
-            question, evidence, schema_note, sql_node1, sql_node2
-        )
-        prompt_dict["col_comparison"] = col_comparison_prompt
-    # Aspect 2: Evidence Alignment (WHERE Clause or Computation)
-    if evidence is not None and len(evidence.strip()) > 0:
-        evidence_alignment_prompt = get_evidence_alignment_prompt(
-            question, evidence, schema_note, sql_node1, sql_node2
-        )
-        prompt_dict["evidence_alignment"] = evidence_alignment_prompt
-    # Aspect 3: Filtering Conditions (WHERE Clause)
-    filtering_conditions_prompt = get_filtering_conditions_prompt(
-        question, evidence, schema_note, sql_node1, sql_node2
+    base_info = f"""
+NL Query: {question}
+Evidence: {evidence}
+Schema: {schema_note}
+
+SQL1: {sql_node1.org_sql}
+SQL2: {sql_node2.org_sql}
+"""
+    score1, score2 = 0, 0
+    comparison_note_dict = {}
+    # Aspect 1: GROUP BY Clause if exists
+    group_by_note = gen_group_by_note(sql_node1, sql_node2)
+    if group_by_note is not None:
+        comparison_note_dict["group_by"] = group_by_note
+    # Aspect 2: ORDER BY Clause if exists
+    order_by_note = gen_order_by_note(sql_node1, sql_node2)
+    if order_by_note is not None:
+        comparison_note_dict["order_by"] = order_by_note
+    # Aspect 3: Filtering Logic
+    filtering_logic_note = gen_filtering_logic_note(sql_node1, sql_node2)
+    if filtering_logic_note is not None:
+        # comparison_note_dict["filtering"] = filtering_logic_note
+        comparison_note_dict["filtering"] = None
+    # Aspect 4: returned columns (Final SELECT Clause)
+    sql1_unaligned_cols, sql2_unaligned_cols = same_returned_columns(
+        sql_node1, sql_node2
     )
-    prompt_dict["filtering_conditions"] = filtering_conditions_prompt
-    # Aspect 4: Overall Comparison
+    if len(sql1_unaligned_cols) > 0 and len(sql2_unaligned_cols) > 0:
+        col_comparison_note = gen_col_comparison_note(
+            sql_node1,
+            sql_node2,
+            sql1_unaligned_cols,
+            sql2_unaligned_cols,
+        )
+        comparison_note_dict["returned_columns"] = col_comparison_note
+    elif len(sql1_unaligned_cols) > 0:
+        score1 += 0.5
+    elif len(sql2_unaligned_cols) > 0:
+        score2 += 0.5
     overall_comparison_prompt = get_overall_comparison_prompt(
-        question, evidence, schema_note, sql_node1, sql_node2
+        question, evidence, schema_note, sql_node1, sql_node2, comparison_note_dict
     )
-    prompt_dict["overall_comparison"] = overall_comparison_prompt
-    aspects, prompts = zip(*prompt_dict.items())
-    results = llm_check(prompts)
-    score = 0
-    aspect_results = {}
-    for aspect, result in zip(aspects, results):
-        aspect_results[aspect] = result
-        score += parse_result(result)
-    if score > 0:
+    aspect_dict = {}
+    aspect_prompts = []
+    for aspect_name, note in comparison_note_dict.items():
+        aspect_dict[aspect_name] = Aspect(aspect_name, base_info, note)
+        aspect_prompts.append(aspect_dict[aspect_name].get_prompt())
+    if len(aspect_prompts) > 0:
+        aspect_eval_results = llm_check(aspect_prompts)
+        for aspect_name, aspect_eval_result in zip(
+            comparison_note_dict.keys(), aspect_eval_results
+        ):
+            # if aspect_name == "filtering":
+            #     other_info = {
+            #         "SQL1": sql_node1.notes["filtering_conditions_note"],
+            #         "SQL2": sql_node2.notes["filtering_conditions_note"],
+            #     }
+            # else:
+            other_info = None
+            better_sql = aspect_dict[aspect_name].parse_output(
+                aspect_eval_result, other_info
+            )
+            if better_sql == "SQL1":
+                score1 += 1
+            elif better_sql == "SQL2":
+                score2 += 1
+            comparison_note_dict[aspect_name] = aspect_eval_result
+    if score1 - score2 > 1:
+        return "SQL1", comparison_note_dict
+    elif score2 - score1 > 1:
+        return "SQL2", comparison_note_dict
+
+    # do the overall comparison
+    overall_res = llm_check([overall_comparison_prompt])[0]
+    better_sql = parse_result(overall_res)
+    if better_sql == "SQL1":
+        score1 += 1
+    elif better_sql == "SQL2":
+        score2 += 1
+    if score1 > score2:
         better_sql = "SQL1"
-    elif score < 0:
+    elif score2 > score1:
         better_sql = "SQL2"
     else:
         better_sql = "Unsure"
-    return better_sql, aspect_results
-
-
-def parse_result(result: str) -> int:
-    start_idx = result.find("{")
-    end_idx = result.rfind("}") + 1
-    result = result[start_idx:end_idx]
-    try:
-        result = json.loads(result)
-        if result["better_sql"] == "SQL1":
-            return 1
-        elif result["better_sql"] == "SQL2":
-            return -1
-        else:
-            return 0
-    except:
-        return 0
+    comparison_note_dict["overall"] = overall_res
+    return better_sql, comparison_note_dict
 
 
 def compare_sql(
@@ -449,20 +503,24 @@ def collective_selection(
         return "Error SQL"
     checked_sql_nodes = []
     # select the sql nodes with comparison
-    selected_sql = sorted_sql_nodes[0]
+    selected_sql = sorted_sql_nodes[-1]
     comparison_notes = []
     while True:
         cand_sql_node = None
-        for i, sql_node in enumerate(sorted_sql_nodes):
+        for i, sql_node in enumerate(sorted_sql_nodes[::-1]):
             if (
                 sql_node not in checked_sql_nodes
                 and sql_node.org_sql not in selected_sql.covered_sqls
                 and sql_node.org_sql != selected_sql.org_sql
             ):
                 cand_sql_node = sql_node
+                checked_sql_nodes.append(cand_sql_node)
                 break
         if cand_sql_node is None:
             break
+        if selected_sql.org_sql in cand_sql_node.covered_sqls:
+            selected_sql = cand_sql_node
+            continue
         # compare the selected sql with the cand sql node
         schema_note = collect_schema_info(
             sql_collection.table_columns, sql_collection.db
@@ -475,8 +533,7 @@ def collective_selection(
         comparison_notes.append(
             {"SQL1": sql1, "SQL2": sql2, "comparison_note": comparison_note}
         )
-        checked_sql_nodes.append(cand_sql_node)
-        if better_sql == "SQL2":
+        if better_sql != "SQL1":
             selected_sql = cand_sql_node
     return selected_sql.org_sql, comparison_notes
 
@@ -556,6 +613,9 @@ def rank_sql_nodes(sql_nodes: List[SQLNode], sql_cnt: Dict[str, int]) -> List[SQ
     sql_covered_sqls = defaultdict(list)
     sql_coverage = defaultdict(int)
     for i, sql_node1 in enumerate(sql_nodes):
+        # directly skip the sql nodes with evidence alignment score 0
+        if sql_node1.evidence_alignment_score == 0:
+            continue
         sql_coverage[sql_node1.org_sql] += sql_cnt.get(sql_node1.org_sql, 1)
         for j, sql_node2 in enumerate(sql_nodes):
             if i >= j:

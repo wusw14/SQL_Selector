@@ -37,10 +37,7 @@ def load_minbug_qid_sqls(file_name):
         for sql, bug in zip(sqls, bugs):
             if bug == min_bug:
                 selected_sqls.append(sql)
-        if len(selected_sqls) == 0:
-            qid_selected[int(qid)] = "Error SQL"
-        else:
-            qid_selected[int(qid)] = selected_sqls[0]
+        qid_selected[int(qid)] = None
         qid_sqls[int(qid)] = selected_sqls
     return qid_sqls, qid_selected
 
@@ -159,7 +156,7 @@ def load_selected(args):
             args.method_name, args.dataset_name, args.model_name
         )
         qid_sqls = qid_unique_preds
-        qid_selected = {qid: preds[0] for qid, preds in qid_sqls.items()}
+        qid_selected = {qid: None for qid in qid_sqls.keys()}
     elif args.selector == "minbug":
         if args.method_name == "sql-r1":
             file_name = f"../SQL-R1/results/{args.dataset_name}-generated_sql_{args.model_name}_bugchecked.json"
@@ -270,10 +267,17 @@ if __name__ == "__main__":
         lower_acc = min(gp_acc.values())
         upper_acc = max(gp_acc.values())
         maj_lower_acc, maj_upper_acc = 1, 0
+        max_vote_cnt = 0
         for gp, vote in gp_votes.items():
             if vote == max_vote:
                 maj_lower_acc = min(maj_lower_acc, gp_acc[gp])
                 maj_upper_acc = max(maj_upper_acc, gp_acc[gp])
+                max_vote_cnt += 1
+        if "our" not in args.selector:
+            if max_vote_cnt > 1:
+                selected_acc = maj_upper_acc / max_vote_cnt
+            else:
+                selected_acc = maj_upper_acc
         eval_dict[qid] = {
             "upper_acc": upper_acc,
             "lower_acc": lower_acc,

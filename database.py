@@ -252,7 +252,7 @@ Please answer "Yes" or "No" without any other explanation.
 """
     res = llm_check([prompt])[0]
     # print(f"[DEBUG] {prompt}\n res: {res.strip()}")
-    return res.startswith("Yes")
+    return type(res) == str and res.startswith("Yes")
 
 
 class Database:

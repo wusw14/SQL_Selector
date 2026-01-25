@@ -91,6 +91,7 @@ class SQLNode:
         self.exec_columns = exec_columns
         self.covered_sqls = []
         self.coverage = 0
+        self.evidence_alignment_score = 1
 
     def find_table_columns(self) -> Tuple[Set[str], Set[str]]:
         tables = set()
@@ -136,6 +137,8 @@ class SQLCollection:
         sql_times = {}
         sql_columns = {}
         for sql in sqls:
+            if "FROM" not in sql.upper():
+                continue
             start_time = time.time()
             res, cols = execute_sql_wrapper(
                 sql, self.db.db_path, 10, return_columns=True

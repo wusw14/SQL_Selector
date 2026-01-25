@@ -14,6 +14,7 @@ from typing import Tuple
 import time
 import os
 import json
+from collections import defaultdict
 
 verifier = os.getenv("MODEL_ABBR")
 
@@ -48,7 +49,7 @@ if __name__ == "__main__":
         results = {}
     print(f"processed {len(results)} questions")
 
-    eval_base = json.load(open(os.path.join(eval_dir, "majority.json"), "r"))
+    eval_base = json.load(open(os.path.join(eval_dir, "exec.json"), "r"))
     qid_to_be_checked = []
     for qid, res in eval_base.items():
         if res["upper_acc"] == 0 or res["lower_acc"] == 1:
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     db_memory = Memory()
     flag = False
     for qid, preds in qid_pred.items():
-        # if int(qid) != 530:
+        # if int(qid) not in [352, 423, 433, 479, 507, 685, 694, 959, 1009, 1241, 1510]:
         #     continue
         if str(qid) in results:
             continue
@@ -69,8 +70,13 @@ if __name__ == "__main__":
         question = info["question"]
         evidence = info["evidence"]
         db_name = info["db_id"]
-        if db_name != "california_schools":
+        # [DEBUG]: compare GT SQL with the predicted sqls
+        gt_sql = info["SQL"]
+        if len(gt_sql) > 1:
             continue
+        preds = [gt_sql[0]] + preds
+        # if db_name != "california_schools":
+        #     continue
         gp_acc_list = qid_sql_acc[str(qid)]
         sql_acc_dict = {}
         for sql_acc in gp_acc_list:
@@ -100,6 +106,7 @@ if __name__ == "__main__":
             exec_res_set.add(frozenset(exec_res))
 
         if len(exec_res_set) <= 1:
+            continue
             if len(sql_collection.sqls) == 0:
                 selected_sql = "Error SQL"
             else:
@@ -116,19 +123,45 @@ if __name__ == "__main__":
         # sql_nodes = filter_by_returned_columns(sql_collection, question, evidence)
         print("=====Pointwise Selection=====")
         sql_nodes = pointwise_selection(sql_collection, question, evidence)
+        # filtered_sql_nodes = []
+        # tb_col_nodes = defaultdict(list)
+        # for sql_node in sql_nodes:
+        #     tables, columns = sql_node.tables, sql_node.columns
+        #     tables = [tb for tb in tables if tb in db.tables]
+        #     filtered_columns = []
+        #     for col in columns:
+        #         col = col.split(".", maxsplit=1)[-1]
+        #         for tb in tables:
+        #             if col in db.tables[tb].columns:
+        #                 filtered_columns.append(col)
+        #                 break
+        #     sql_cnt = qid_sql_cnt.get(qid, {})
+        #     print(
+        #         f"SQL: {sql_node.org_sql}\nTables: {tables}\nColumns: {filtered_columns}"
+        #         f"\nORG Columns: {sql_node.columns}"
+        #         f"\nNum: {sql_cnt.get(sql_node.org_sql, 1)}"
+        #         f"\nAcc: {sql_acc_dict.get(sql_node.org_sql, 0)}"
+        #     )
+        #     print("-" * 100)
+        #     tb_col = frozenset(tables + filtered_columns)
+        #     tb_col_nodes[tb_col].append(sql_node)
+        # for tb_col, nodes in tb_col_nodes.items():
+        #     if len(nodes) > 1 or sql_cnt.get(nodes[0].org_sql, 1) > 1:
+        #         filtered_sql_nodes.extend(nodes)
+        # sql_nodes = filtered_sql_nodes
         sorted_sql_nodes = rank_sql_nodes(sql_nodes, qid_sql_cnt[qid])
-        # print("=====Collective Selection=====")
-        # selected_sql, comparison_notes = collective_selection(
-        #     sql_collection, question, evidence, sorted_sql_nodes
-        # )
+        print("=====Collective Selection=====")
+        selected_sql, comparison_notes = collective_selection(
+            sql_collection, question, evidence, sorted_sql_nodes
+        )
         # selected_sql, comparison_notes = exhaustive_pairwise(
         #     sql_collection, question, evidence, sql_nodes
         # )
-        selected_sql = None
-        comparison_notes = []
+        # selected_sql = None
+        # comparison_notes = []
         print("\n" * 5)
         sql_logs = []
-        for sql_node in sql_nodes:
+        for sql_node in sorted_sql_nodes:
             # if min_warning_cnt is None or sql_node.warning_cnt < min_warning_cnt:
             #     min_warning_cnt = sql_node.warning_cnt
             #     selected_sql = sql_node.org_sql
@@ -148,10 +181,11 @@ if __name__ == "__main__":
                 }
             )
         results[qid] = {
-            "sql_logs": sql_logs,
             "selected_sql": selected_sql,
-            "comparison_notes": comparison_notes,
+            "selected_acc": sql_acc_dict.get(selected_sql, 0),
             "time_cost": time.time() - start_time,
+            "sql_logs": sql_logs,
+            "comparison_notes": comparison_notes,
         }
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)

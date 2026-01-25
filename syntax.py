@@ -1,9 +1,43 @@
-from typing import Any, Tuple
+from typing import Any, Tuple, List
 from analyzer import get_exec_examples
 from parser import SQLNode, prepare_attr_map_dict, recover_sql_from_attr_map_dict
 from database import Database
 import re
 from sqlglot import parse_one, exp
+
+
+def extract_group_by(sql: str) -> Tuple[List[str], str]:
+    pattern = "(?i)GROUP\s+BY\s+((?:(?!\b(?:ORDER\s+BY|LIMIT|HAVING)\b)[^)(])+)"
+    match = re.search(pattern, sql, re.IGNORECASE | re.DOTALL)
+    if match:
+        clause = match.group(1)
+        cols = []
+        for col in clause.split(","):
+            col = col.strip()
+            if "." in col:
+                tb, col = col.strip().split(".", maxsplit=1)
+            cols.append(col)
+        return cols, clause
+    return [], None
+
+
+def classify_ranking(sql: str) -> str:
+    if (
+        "ORDER BY" not in sql.upper()
+        and "MAX" not in sql.upper()
+        and "MIN" not in sql.upper()
+    ):
+        return None
+    if "ORDER BY" in sql.upper():
+        if "DESC" in sql.upper():
+            return "order by desc"
+        else:
+            return "order by asc"
+    elif "MAX" in sql.upper():
+        return "max"
+    elif "MIN" in sql.upper():
+        return "min"
+    return None
 
 
 def extract_join_conditions(sql: str) -> str:
