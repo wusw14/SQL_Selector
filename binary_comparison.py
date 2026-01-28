@@ -162,10 +162,29 @@ if __name__ == "__main__":
         result = dict(info)
         result["time_cost"] = time.time() - start_time
         result["schema"] = sql_collection.table_columns
+        sql_logs = []
+        for sql_node in [gt_sql_node] + intra_group_selected_sqls:
+            sql_logs.append(
+                {
+                    "sql": sql_node.org_sql,
+                    "notes": sql_node.notes,
+                }
+            )
+        result["sql_logs"] = sql_logs
         comparison_notes = []
         for i, response in enumerate(responses):
             note = parse_json(response)
-            correctness = int(note["better_sql"] == "SQL1")
+            try:
+                correctness = int(note["better_sql"] == "SQL1")
+            except:
+                if "better_sql" in note:
+                    index = note["better_sql"].rindex("better_sql")
+                    if "SQL1" in note["better_sql"][index:]:
+                        correctness = 1
+                    else:
+                        correctness = 0
+                else:
+                    correctness = 0.5
             comparison_notes.append(
                 {
                     "SQL1": gt_sql_node.org_sql,
