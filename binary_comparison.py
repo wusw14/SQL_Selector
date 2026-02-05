@@ -3,13 +3,13 @@
 2. Generate the comparison notes for the generated SQLs
 """
 
-from selection import SQLNode
 from typing import List, Dict
 from prompts import get_simple_comparison_prompt, get_comparison_prompt
 from llm_infer import llm_check
 from utils import parse_json
 from selection import SQLNode
 from representation import get_relevant_rules
+from parser import SQLCollection, SQLNode
 
 
 def get_prompt(
@@ -64,9 +64,9 @@ def gen_comparison_notes(
 
 **NL Query**
 {question}
-**Evidence**
-{evidence}
 """
+    if evidence is not None and len(evidence.strip()) > 0:
+        base_info += f"**Evidence**\n{evidence}\n"
     prompts = []
     for gen_sql_node in gen_sql_nodes:
         prompt = get_prompt(base_info, gt_sql_node, gen_sql_node, rule_mode, rule_dict)
@@ -99,31 +99,39 @@ def gen_comparison_notes(
 
 def binary_comparison(
     qids,
-    qid_info,
-    qid_gt_nodes,
-    qid_sql_nodes,
-    qid_preds,
+    qid_sql_collection: Dict[str, SQLCollection],
     rule_mode,
     representation_model,
-    qid_rules,
 ):
     # qid_sql_nodes is the SQL nodes for the question after the intra group selection
+    qid_rules = {}
+    for qid, sql_collection in qid_sql_collection.items():
+        qid_rules[qid] = sql_collection.rules
     results = {}
     for qid in qids:
-        gt_nodes = qid_gt_nodes.get(qid, None)
-        if gt_nodes is None:
+        sql_collection = qid_sql_collection[qid]
+        gt_nodes = sql_collection.gt_sql_nodes
+        sql_nodes = sql_collection.incorrect_sql_nodes
+        if (
+            gt_nodes is None
+            or len(gt_nodes) == 0
+            or sql_nodes is None
+            or len(sql_nodes) == 0
+        ):
             continue
-        sql_nodes = qid_sql_nodes[qid]
-        info = qid_info[qid]
+        info = sql_collection.info
         question = info["question"]
         evidence = info["evidence"]
-        schema_note = info["schema_note"]
-        preds = qid_preds[qid]
+        schema_note = sql_collection.schema_note
+        preds = sql_collection.sqls
         comparison_notes_all = []
         for gt_node in gt_nodes:
-            rule_dict = get_relevant_rules(
-                qid, qid_rules, preds, representation_model, rule_mode, top_k=5
-            )
+            if rule_mode != "none":
+                rule_dict = get_relevant_rules(
+                    qid, qid_rules, preds, representation_model, rule_mode, top_k=5
+                )
+            else:
+                rule_dict = None
             comparison_notes = gen_comparison_notes(
                 question,
                 evidence,
@@ -135,6 +143,7 @@ def binary_comparison(
             )
             comparison_notes_all.extend(comparison_notes)
         result = dict(info)
+        result["schema_note"] = schema_note
         result["comparison_notes"] = comparison_notes_all
         results[qid] = result
     return results
