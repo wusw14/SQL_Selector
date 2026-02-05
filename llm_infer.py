@@ -9,27 +9,41 @@ import json
 load_dotenv(override=True)
 
 verifier_model = os.getenv("VERIFIER_MODEL")
+rule_gen_model = os.getenv("RULE_GEN_MODEL")
 
-client = OpenAI(
+base_client = OpenAI(
     api_key=os.getenv("API_KEY"),
     base_url=os.getenv("BASE_URL"),
+)
+rule_gen_client = OpenAI(
+    api_key=os.getenv("RULE_GEN_API_KEY"),
+    base_url=os.getenv("RULE_GEN_URL"),
 )
 
 
 # return the reponses and token probabilities
-def generate_response(prompt):
+def generate_response(prompt, llm="Qwen3-30B"):
+    if llm == "deepseek":
+        client = rule_gen_client
+        model = rule_gen_model
+        temperature = 1.0
+    else:
+        client = base_client
+        model = verifier_model
+        temperature = 0.7
     response = client.chat.completions.create(
-        model=verifier_model,
+        model=model,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
+        temperature=temperature,
     )
-    response_text = response.choices[0].message.content
-    return response_text
+    return response.choices[0].message.content
 
 
-def llm_check(prompts):
+def llm_check(prompts, llm="Qwen3-30B"):
     # parallel generation
     with ThreadPoolExecutor(max_workers=len(prompts)) as executor:
-        futures = [executor.submit(generate_response, prompt) for prompt in prompts]
+        futures = [
+            executor.submit(generate_response, prompt, llm) for prompt in prompts
+        ]
         results = [future.result() for future in futures]
     return results
