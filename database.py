@@ -5,6 +5,7 @@ import os
 import pandas as pd
 from collections import defaultdict
 from llm_infer import llm_check
+import json
 
 
 class Column:
@@ -27,14 +28,19 @@ class Column:
         self.desp = desp
 
     def get_val_examples(self):
-        sql = f"SELECT DISTINCT `{self.name}` FROM `{self.tb_name}` WHERE `{self.name}` IS NOT NULL AND `{self.name}` != ''"
+        sql = f"SELECT `{self.name}` FROM `{self.tb_name}` WHERE `{self.name}` IS NOT NULL AND `{self.name}` != '' GROUP BY `{self.name}` ORDER BY COUNT(*) DESC;"
         if self.stats["number of distinct values"] > 20:
-            sql += " LIMIT 3;"
+            sql += " LIMIT 10;"
         else:
             sql += ";"
         res = execute_sql_wrapper(sql, self.db_path, 10)
         res = [row[0] for row in res]
-        return res
+        res_list = []
+        for val in res:
+            if type(val) == str and len(val) > 100:
+                val = val[:100] + "..."
+            res_list.append(val)
+        return res_list
 
     def get_stats(self):
         # num of distinct values, ratio of null values
@@ -189,9 +195,9 @@ def update_joinable_columns(
         for tb, col in aggregated_cols:
             other_tb_cols = []
             for tb2, col2 in aggregated_cols:
-                if tb2 != tb:
-                    other_tb_cols.append((tb2, col2))
-            agg_joinable_columns[(tb, col)] = other_tb_cols
+                # if tb2 != tb:
+                other_tb_cols.append((tb2, col2))
+            agg_joinable_columns[(tb, col)] = list(set(other_tb_cols))
     return agg_joinable_columns
 
 
@@ -257,6 +263,7 @@ Please answer "Yes" or "No" without any other explanation.
 
 class Database:
     def __init__(self, dataset_name: str, db_name: str):
+        self.dataset_name = dataset_name
         self.db_path = self.get_db_path(dataset_name, db_name)
         self.db_name = db_name
         self.tables = self.load_tables(dataset_name, db_name)
@@ -269,13 +276,37 @@ class Database:
         for tb_name, tb in self.tables.items():
             tb_joinable_columns = tb.joinable_columns
             for (tb_name, col_name), joinable_cols in tb_joinable_columns.items():
+                tb_name, col_name = tb_name.lower(), col_name.lower()
+                joinable_columns[(tb_name, col_name)].add((tb_name, col_name))
                 for tb2, col2 in joinable_cols:
+                    tb2, col2 = tb2.lower(), col2.lower()
                     joinable_columns[(tb_name, col_name)].add((tb2, col2))
                     joinable_columns[(tb2, col2)].add((tb_name, col_name))
+        # load joinable columns from json file
+        if self.dataset_name == "birddev":
+            joinable_columns_file = f"../datasets/bird/dev/dev_databases/{self.db_name}/joinable_columns.json"
+        else:
+            joinable_columns_file = (
+                f"../datasets/spider/test_database/{self.db_name}/joinable_columns.json"
+            )
+        if os.path.exists(joinable_columns_file):
+            with open(joinable_columns_file, "r") as f:
+                joinable_columns_json = json.load(f)
+                for tb_name, col_dict in joinable_columns_json.items():
+                    for col_name, joinable_cols in col_dict.items():
+                        tb_name, col_name = tb_name.lower(), col_name.lower()
+                        joinable_columns[(tb_name, col_name)].add((tb_name, col_name))
+                        for tb2, col2 in joinable_cols:
+                            tb2, col2 = tb2.lower(), col2.lower()
+                            joinable_columns[(tb_name, col_name)].add((tb2, col2))
+                            joinable_columns[(tb2, col2)].add((tb_name, col_name))
+        # print(f"joinable_columns [before update]")
+        # for key, values in joinable_columns.items():
+        #     print(f"{key}\n{values}\n")
         agg_joinable_columns = update_joinable_columns(joinable_columns)
-        # discover the joinable columns between two tables
-        agg_joinable_columns = self.discover_more_joinable_columns(agg_joinable_columns)
-        agg_joinable_columns = update_joinable_columns(agg_joinable_columns)
+        # # discover the joinable columns between two tables
+        # agg_joinable_columns = self.discover_more_joinable_columns(agg_joinable_columns)
+        # agg_joinable_columns = update_joinable_columns(agg_joinable_columns)
         return agg_joinable_columns
 
     def discover_more_joinable_columns(
@@ -316,7 +347,7 @@ class Database:
     def get_db_path(self, dataset_name: str, name: str) -> str:
         if dataset_name == "birddev":
             db_dir = "../datasets/bird/dev/dev_databases"
-        elif dataset_name == "spider":
+        elif dataset_name == "spidertest":
             db_dir = "../datasets/spider/test_database"
         else:
             raise ValueError(f"Invalid dataset name: {dataset_name}")
@@ -337,7 +368,7 @@ class Database:
                 tb_name = tb_name.lower()
                 tb = Table(self.db_path, db_name, tb_name, tb_desp)
                 tables[tb_name] = tb
-        elif dataset_name == "spider":
+        elif dataset_name == "spidertest":
             # read tables from sqlite file
             sql = f"SELECT name FROM sqlite_master WHERE type='table';"
             res = execute_sql_wrapper(sql, self.db_path, 10)
