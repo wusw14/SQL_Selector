@@ -215,18 +215,25 @@ if __name__ == "__main__":
         evidence = info["evidence"]
         gt_sql = info["SQL"]
         db_id = info["db_id"]
-        db_path = f"../datasets/bird/dev/dev_databases/{db_id}/{db_id}.sqlite"
+        if args.dataset_name == "spidertest":
+            db_path = f"../datasets/spider/test_database/{db_id}/{db_id}.sqlite"
+        else:
+            db_path = f"../datasets/bird/dev/dev_databases/{db_id}/{db_id}.sqlite"
 
         gt_res_list = []
         gt_cols_list = []
         if type(gt_sql) == list:
             for sql in gt_sql:
-                res, cols = execute_sql_wrapper(sql, db_path, 10, return_columns=True)
+                res, cols = execute_sql_wrapper(
+                    sql, db_path, 10, return_columns=True, normalized=True
+                )
                 if res not in [None, "Time Out", "Unexecutable"]:
                     gt_res_list.append(res)
                     gt_cols_list.append(cols)
         else:
-            res, cols = execute_sql_wrapper(gt_sql, db_path, 10, return_columns=True)
+            res, cols = execute_sql_wrapper(
+                gt_sql, db_path, 10, return_columns=True, normalized=True
+            )
             if res not in [None, "Time Out", "Unexecutable"]:
                 gt_res_list.append(res)
                 gt_cols_list.append(cols)
@@ -236,7 +243,9 @@ if __name__ == "__main__":
         exec_res_sqls = defaultdict(list)
         exec_res_cols = defaultdict(list)
         for sql in sqls:
-            res, cols = execute_sql_wrapper(sql, db_path, 10, return_columns=True)
+            res, cols = execute_sql_wrapper(
+                sql, db_path, 10, return_columns=True, normalized=True
+            )
             if res not in [None, "Time Out", "Unexecutable"]:
                 exec_res_sqls[frozenset(res)].append(sql)
                 exec_res_cols[frozenset(res)].append(cols)

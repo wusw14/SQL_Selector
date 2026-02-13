@@ -8,6 +8,16 @@ from utils import execute_sql_wrapper
 import time
 
 
+def collect_schema_info(table_columns: Dict[str, List[str]], db: Database) -> str:
+    schema_info_list = [f"Database: {db.db_name}"]
+    for tb_name in table_columns:
+        columns = table_columns[tb_name]
+        schema_info_list.append(db.tables[tb_name].display(columns))
+    schema_info = "\n".join(schema_info_list)
+    schema_info = schema_info.replace("\n\n", "\n")
+    return schema_info
+
+
 class SubSQLNode:
     def __init__(self, sql: str, parent: "SubSQLNode" = None):
         self.sql = self.normalize_sql(sql)
@@ -76,6 +86,8 @@ class SQLNode:
         exec_res: Any,
         exec_time: float,
         exec_columns: List[str],
+        tables: List[str],
+        columns: List[str],
     ):
         self.org_sql = org_sql
         self.main_sql_node = subsql_nodes[0]
@@ -83,7 +95,8 @@ class SQLNode:
         self.views = views
         self.exec_res = exec_res
         self.exec_time = exec_time
-        self.tables, self.columns = self.find_table_columns()
+        self.tables, self.columns = tables, columns
+        self.aligned_tables, self.aligned_columns = [], []
         self.warning_cnt = 0
         self.notes = None
         self.views_note = None
@@ -92,6 +105,7 @@ class SQLNode:
         self.covered_sqls = []
         self.coverage = 0
         self.evidence_alignment_score = 1
+        self.acc = None
 
     def find_table_columns(self) -> Tuple[Set[str], Set[str]]:
         tables = set()
@@ -116,9 +130,35 @@ class SQLNode:
         columns = [col.lower() for col in columns]
         return tables, columns
 
+    def align_tables_and_columns(self, db: Database):
+        aligned_tables = []
+        aligned_columns = []
+        for table in self.tables:
+            if table in db.tables:
+                aligned_tables.append(table)
+        for col_name in self.columns:
+            if "." in col_name:
+                tb_name, col_name = col_name.split(".", maxsplit=1)
+                if (
+                    tb_name in aligned_tables
+                    and col_name in db.tables[tb_name].columns
+                    and col_name not in aligned_columns
+                ):
+                    aligned_columns.append(col_name)
+            else:
+                for tb_name in aligned_tables:
+                    if (
+                        col_name in db.tables[tb_name].columns
+                        and col_name not in aligned_columns
+                    ):
+                        aligned_columns.append(col_name)
+                        break
+        self.aligned_tables = aligned_tables
+        self.aligned_columns = aligned_columns
+
 
 class SQLCollection:
-    def __init__(self, sqls: List[str], db: Database):
+    def __init__(self, sqls: List[str], db: Database, info: Dict[str, Any]):
         self.db = db
         self.exe_results, self.sql_times, self.sql_columns = self.get_exe_results(sqls)
         self.sqls, self.sql_nodes = self.parse_sqls(sqls)
@@ -126,6 +166,13 @@ class SQLCollection:
         # TODO: self.prefilter_by_conditions()
         self.tables, self.columns = self.agg_table_columns()
         self.table_columns = self.find_table_columns()
+        self.intra_selected_sql_nodes = []
+        self.rules = []
+        self.schema_note = collect_schema_info(self.table_columns, self.db)
+        self.info = info
+        self.gt_sql_nodes = None  # the SQL nodes for the ground truth
+        self.incorrect_sql_nodes = None
+        self.comparison_notes = []
 
     def get_exe_results(self, sqls: List[str]) -> Dict[str, str]:
         """
@@ -162,14 +209,24 @@ class SQLCollection:
         for sql in sqls:
             if sql not in self.exe_results:
                 continue
-            filtered_sqls.append(sql)
-            subsql_nodes, views = parse_sql(sql)
+            subsql_nodes, views, tables, columns = parse_sql(sql)
             exec_res = self.exe_results[sql]
             exec_time = self.sql_times[sql]
             exec_columns = self.sql_columns[sql]
+            if tables is None or columns is None:
+                continue
             sql_node = SQLNode(
-                sql, subsql_nodes, views, exec_res, exec_time, exec_columns
+                sql,
+                subsql_nodes,
+                views,
+                exec_res,
+                exec_time,
+                exec_columns,
+                tables,
+                columns,
             )
+            filtered_sqls.append(sql)
+            sql_node.align_tables_and_columns(self.db)
             sql_nodes.append(sql_node)
         return filtered_sqls, sql_nodes
 
@@ -201,7 +258,6 @@ class SQLCollection:
                         and col_name not in table_columns[tb_name]
                     ):
                         table_columns[tb_name].append(col_name)
-                        break
         return table_columns
 
     def prefilter_by_tables(self):
@@ -267,6 +323,18 @@ def parse_sql(sql: str) -> Tuple[List[SubSQLNode], Dict[str, str]]:
     views = {}
     try:
         parsed_query = parse_one(sql)
+        tables = parsed_query.find_all(exp.Table)
+        # tables = list(set([table.name.lower() for table in tables]))
+        tables = list(set([table.name for table in tables]))
+        columns = parsed_query.find_all(exp.Column)
+        # columns = list(set([column.name.lower() for column in columns]))
+        columns = list(set([column.name for column in columns]))
+        tables = [
+            recover_sql_from_attr_map_dict(table, attr_map_dict) for table in tables
+        ]
+        columns = [
+            recover_sql_from_attr_map_dict(column, attr_map_dict) for column in columns
+        ]
         ctes = parsed_query.find_all(exp.CTE)
         views = {cte.alias: cte.this.sql() for cte in ctes}
         parsed_query.set("with", None)
@@ -284,11 +352,13 @@ def parse_sql(sql: str) -> Tuple[List[SubSQLNode], Dict[str, str]]:
         print(f"[Error] Failed to parse the SQL: {e}")
         print(f"[SQL]: {sql}")
         subqueries_sql = None
+        tables = None
+        columns = None
     sql = recover_sql_from_attr_map_dict(sql, attr_map_dict)
     # sort the subqueries_sql by the length of the sql
     sql_nodes = [SubSQLNode(sql)]
     if subqueries_sql is None:
-        return sql_nodes, views
+        return sql_nodes, views, tables, columns
     subqueries_sql.sort(key=lambda x: len(x))
     for q in subqueries_sql:
         q_node = SubSQLNode(q, sql_nodes[0])
@@ -304,4 +374,4 @@ def parse_sql(sql: str) -> Tuple[List[SubSQLNode], Dict[str, str]]:
         for j in range(len(sql_nodes)):
             if sql_nodes[i].parent == sql_nodes[j]:
                 sql_nodes[j].children.append(sql_nodes[i])
-    return sql_nodes, views
+    return sql_nodes, views, tables, columns

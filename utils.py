@@ -2,9 +2,12 @@ import sqlite3
 import sys
 from func_timeout import func_timeout, FunctionTimedOut
 import json
+from copy import deepcopy
 
 
-def execute_sql_wrapper(sql, db_path, timeout, return_columns: bool = False):
+def execute_sql_wrapper(
+    sql, db_path, timeout, return_columns: bool = False, normalized: bool = False
+):
     try:
         res = func_timeout(timeout, execute_sql, args=(sql, db_path, return_columns))
     except FunctionTimedOut:
@@ -20,7 +23,9 @@ def execute_sql_wrapper(sql, db_path, timeout, return_columns: bool = False):
     return res
 
 
-def execute_sql(sql: str, db_path: str, return_columns: bool = False):
+def execute_sql(
+    sql: str, db_path: str, return_columns: bool = False, normalized: bool = False
+):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     try:
@@ -32,6 +37,23 @@ def execute_sql(sql: str, db_path: str, return_columns: bool = False):
             for row in result
             if not all(value is None or value == "" for value in row)
         ]
+        # if normalized, then normalize string into lower case; normalize number into float with 2 decimal places
+        if normalized:
+            result_raw = deepcopy(result)
+            result = []
+            for row in result_raw:
+                row_normalized = []
+                for value in row:
+                    if type(value) == str:
+                        try:
+                            row_normalized.append(round(float(value), 2))
+                        except:
+                            row_normalized.append(value.lower())
+                    elif type(value) == int or type(value) == float:
+                        row_normalized.append(round(float(value), 2))
+                    else:
+                        row_normalized.append(value)
+                result.append(row_normalized)
         if return_columns:
             columns = [description[0] for description in cursor.description]
             result = (result, columns)

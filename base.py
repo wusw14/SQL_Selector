@@ -3,7 +3,6 @@ from memory import Memory
 from loader import load_data, load_preds
 from utils import execute_sql_wrapper, execute_sql
 from parser import SQLCollection
-from selection import collective_selection, pointwise_selection
 import argparse
 from typing import Tuple
 import time
@@ -82,7 +81,7 @@ if __name__ == "__main__":
 
         if len(exec_res_set) <= 1:
             if len(sql_collection.sqls) == 0:
-                selected_sql = "Error SQL"
+                selected_sql = preds[0]
             else:
                 selected_sql = sql_collection.sqls[0]
             results[qid] = {

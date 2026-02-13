@@ -1,10 +1,9 @@
 from typing import List, Tuple
-from parser import SQLNode, SubSQLNode
+from parser import SQLNode, SubSQLNode, collect_schema_info
 from database import Database
 from typing import Dict
 from utils import execute_sql_wrapper
 from llm_infer import llm_check
-import json
 from copy import deepcopy
 
 ANALYSIS_INSTRUCTION = """You are an expert in SQL and natural language understanding. Your task is to convert a given SQL query into a clear, concise, and accurate natural language description (NL). To assist you in this task, the following information is provided:
@@ -209,7 +208,7 @@ def classify_query_type(question: str) -> int:
 Selection of Top/Best/Worst/Most – The query asks to choose the most, least, best, worst, top N, or similar superlative selection from a set.
 Example: “Which product has the highest sales?”, “Show the 5 oldest customers.”
 
-Aggregation of Filtered Results – The query asks to apply an aggregation (e.g., sum, count, average, total) to a filtered subset of data.
+Aggregation of Filtered Results – The query asks to apply an aggregation (e.g., sum, count, average, total, percentage, ratio) to a filtered subset of data.
 Example: “What is the total revenue from Europe last year?”, “Count the number of pending orders.”
 
 Other Record Retrieval – The query asks to return all records (or a filtered set) that match given conditions, without aggregation or top/best selection.

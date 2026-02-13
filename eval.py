@@ -193,9 +193,10 @@ if __name__ == "__main__":
     )
 
     qid_sqls, qid_selected = load_selected(args)
-    print(f"========={args.selector}========")
-    print(f"len(qid_sqls): {len(qid_sqls)}")
-    print(f"len(qid_selected): {len(qid_selected)}")
+    # print(f"========={args.selector}========")
+    # print(f"len(qid_sqls): {len(qid_sqls)}")
+    # print(f"len(qid_selected): {len(qid_selected)}")
+    # exit()
 
     output_dir = (
         f"eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}"
@@ -246,18 +247,19 @@ if __name__ == "__main__":
             vote = 0
             for sql in gp_sqls:
                 if sql in sqls:
-                    vote += sql_cnt.get(sql, 0)
+                    vote += sql_cnt.get(sql, 1)
                     checked_sql.append(sql)
                 if sql == selected_sql:
                     selected_acc = acc
-            gp_votes[gp] = vote
-            gp_acc[gp] = acc
-            max_vote = max(max_vote, vote)
+            if vote > 0:
+                gp_votes[gp] = vote
+                gp_acc[gp] = acc
+                max_vote = max(max_vote, vote)
         new_gp = len(gp_acc) + 1
         vote = 0
         for sql in sqls:
             if sql not in checked_sql:
-                vote += sql_cnt.get(sql, 0)
+                vote += sql_cnt.get(sql, 1)
                 checked_sql.append(sql)
                 gp_acc[new_gp] = 0
                 gp_votes[new_gp] = vote
@@ -308,7 +310,7 @@ if __name__ == "__main__":
                     "selected_acc": 0,
                 }
 
-    print(f"len(eval_dict): {len(eval_dict)}")
+    # print(f"len(eval_dict): {len(eval_dict)}")
     for qid, res in eval_dict.items():
         upper_acc_sum += res["upper_acc"]
         lower_acc_sum += min(res["lower_acc"], res["upper_acc"])
@@ -320,6 +322,12 @@ if __name__ == "__main__":
     maj_lower_acc_ratio = maj_lower_acc_sum / len(qid_info) * 100
     maj_upper_acc_ratio = maj_upper_acc_sum / len(qid_info) * 100
     selected_acc_ratio = selected_acc_sum / len(qid_info) * 100
-    print(
-        f"acc range=[{lower_acc_ratio:.2f}%, {upper_acc_ratio:.2f}%], maj_acc range=[{maj_lower_acc_ratio:.2f}%, {maj_upper_acc_ratio:.2f}%], selected_acc: {selected_acc_ratio:.2f}%"
-    )
+    method_name = f"{args.method_name}({args.model_name})"
+    output_list = [f"{method_name:^30}"]
+    output_list.append(f"{args.selector:^10}")
+    output_list.append(f"{lower_acc_ratio:.2f}%")
+    output_list.append(f"{upper_acc_ratio:.2f}%")
+    output_list.append(f"{maj_lower_acc_ratio:.2f}%")
+    output_list.append(f"{maj_upper_acc_ratio:.2f}%")
+    output_list.append(f"{selected_acc_ratio:.2f}%")
+    print(" | ".join(output_list))

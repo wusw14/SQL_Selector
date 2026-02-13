@@ -173,6 +173,18 @@ def extract_select_conditions(sql):
     return []
 
 
+def compare_tb_cols(sql_node1: SQLNode, sql_node2: SQLNode) -> bool:
+    sql1_tbs = sql_node1.aligned_tables
+    sql2_tbs = sql_node2.aligned_tables
+    if frozenset(sql1_tbs) != frozenset(sql2_tbs):
+        return False
+    sql1_cols = sql_node1.aligned_columns
+    sql2_cols = sql_node2.aligned_columns
+    if frozenset(sql1_cols) != frozenset(sql2_cols):
+        return False
+    return True
+
+
 # def generate_group_note(sql_node: SQLNode) -> Tuple[str, int]:
 #     subsql_nodes = sql_node.subsql_nodes
 #     nodes_with_group_by = []

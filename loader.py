@@ -14,10 +14,11 @@ def load_data(dataset_name: str):
             if item["question_id"] in skipped_qids:
                 continue
             qid_info[item["question_id"]] = item
-    elif dataset_name == "spider":
+    elif dataset_name == "spidertest":
         data = json.load(open(f"../datasets/spider/test.json", "r"))
         for i, item in enumerate(data):
             qid_info[i] = {
+                "question_id": i,
                 "question": item["question"],
                 "db_id": item["db_id"],
                 "SQL": item["query"],
@@ -68,7 +69,9 @@ def load_sqlr1_preds(dataset_name: str, model_name: str):
     filename = f"../SQL-R1/results/{dataset_name}-generated_sql_{model_name}.json"
     data = json.load(open(filename, "r"))
     qid_preds = {}
-    for item in data:
+    for i, item in enumerate(data):
+        if "question_id" not in item:
+            item["question_id"] = i
         qid_preds[item["question_id"]] = item["pred_sqls"]
     return qid_preds
 
@@ -83,3 +86,30 @@ def load_artic_text2sql_preds(dataset_name: str, model_name: str):
     for i, item in enumerate(data):
         qid_preds[i] = item["pred_sqls"]
     return qid_preds
+
+
+def load_all_preds(args):
+    llm_list = ["Qwen2.5-7B", "Qwen3-30B", "Qwen2.5-32B"]
+    qid_preds = defaultdict(list)
+    qid_sql_acc = defaultdict(dict)
+    for llm in llm_list:
+        qid_pred, _ = load_preds(args.method_name, args.dataset_name, llm)
+        qid_gp_sql_acc_file = (
+            f"eval_results/{args.dataset_name}/{args.method_name}/{llm}/gp_sql_acc.json"
+        )
+        qid_gp_sql_acc = json.load(open(qid_gp_sql_acc_file, "r"))
+        for qid, preds in qid_pred.items():
+            qid_preds[qid].extend(preds)
+
+        for qid, gp_sql_acc in qid_gp_sql_acc.items():
+            sql_acc = {}
+            for item in gp_sql_acc:
+                sqls = item["sqls"]
+                acc = item["acc1"]
+                for sql in sqls:
+                    sql_acc[sql] = acc
+            qid_sql_acc[int(qid)].update(sql_acc)
+    # deduplicate the preds
+    for qid, preds in qid_preds.items():
+        qid_preds[qid] = list(set(preds))
+    return qid_preds, qid_sql_acc

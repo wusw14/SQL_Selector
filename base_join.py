@@ -3,7 +3,7 @@ from memory import Memory
 from loader import load_data, load_preds
 from utils import execute_sql_wrapper, execute_sql
 from parser import SQLCollection
-from selection import collective_selection, pointwise_selection
+from selection import syntax_level_selection
 import argparse
 from typing import Tuple
 import time
@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
         if len(exec_res_set) <= 1:
             if len(sql_collection.sqls) == 0:
-                selected_sql = "Error SQL"
+                selected_sql = preds[0]
             else:
                 selected_sql = sql_collection.sqls[0]
             results[qid] = {
@@ -98,8 +98,8 @@ if __name__ == "__main__":
             continue
         print(f"[QID]: {qid}, [DB Name]: {db_name}")
         print(f"[Question]: {question}")
-        print("=====Pointwise Selection=====")
-        sql_nodes = pointwise_selection(sql_collection, question, evidence)
+        print("=====Syntax Level Selection=====")
+        sql_nodes = syntax_level_selection(sql_collection, question, evidence)
         min_warning_cnt = None
         for sql_node in sql_nodes:
             if min_warning_cnt is None or sql_node.warning_cnt < min_warning_cnt:

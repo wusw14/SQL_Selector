@@ -3,14 +3,14 @@ Ask the LLM to generate rules for the comparison between the GT SQL and the gene
 Only generate rules for the incorrect cases
 """
 
-from parser import SQLCollection, SQLNode
+from parser import SQLCollection
 from prompts import get_rule_generation_prompt, get_rule_integration_prompt
 from llm_infer import llm_check
 from typing import Dict
 
 
-def rule_generation(
-    qid_compare_results: Dict[str, Dict], qid_sql_collection: Dict[str, SQLCollection]
+def rule_gen(
+    qid_compare_results: Dict[int, Dict], qid_sql_collection: Dict[int, SQLCollection]
 ):
     for qid, compare_result in qid_compare_results.items():
         if "comparison_notes" not in compare_result:
@@ -18,8 +18,16 @@ def rule_generation(
         schema_note = compare_result["schema_note"]
         question = compare_result["question"]
         evidence = compare_result["evidence"]
-        sql_exec_notes = compare_result["sql_exec_notes"]
-        historical_rules = qid_sql_collection[qid].rules
+        if len(qid_sql_collection[qid].rules) > 0:
+            historical_rules = qid_sql_collection[qid].rules[-1]
+        else:
+            historical_rules = []
+        if len(historical_rules) > 5:
+            print(qid, historical_rules)
+            exit()
+        sql_exec_notes = {}
+        for sql_node in qid_sql_collection[qid].sql_nodes:
+            sql_exec_notes[sql_node.org_sql] = sql_node.notes["exec_note"]
         # only generate rules for the incorrect cases
         comparison_notes = compare_result["comparison_notes"]
         # generate the rules for each incorrect comparison
@@ -43,14 +51,22 @@ def rule_generation(
                 historical_rules,
             )
             prompts.append(prompt)
+        if len(prompts) == 0:
+            continue
         responses = llm_check(prompts, llm="deepseek")
         raw_rules = []
         for prompt, response in zip(prompts, responses):
             rule = response.strip()
             raw_rules.append(rule)
+            print(f"[DEBUG]:\n[PROMPT]\n{prompt}\n[RULE]\n{rule}")
+            print("-" * 100)
         # rule integration
-        prompt = get_rule_integration_prompt(raw_rules)
-        response = llm_check(prompt, llm="deepseek")
-        rule = response.strip()
-        qid_sql_collection[qid].rules.append(rule)
+        if len(raw_rules) > 1:
+            prompt = get_rule_integration_prompt(raw_rules)
+            response = llm_check([prompt], llm="deepseek")[0]
+            rules = [rule.strip() for rule in response.strip().split("|")]
+            print(f"[DEBUG] integrated rules:\n{rules}")
+        else:
+            rules = raw_rules
+        qid_sql_collection[qid].rules.append(rules)
     return qid_sql_collection

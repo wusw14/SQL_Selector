@@ -20,6 +20,7 @@ def generate_view_exec_note(view_name: str, view_sql: str, db: Database) -> str:
     exec_res_top3 = get_exec_examples(exec_res)
     note = (
         f"The view [{view_name}] contains {len(exec_res)} row(s).\n"
+        f"The number of unique rows is: {len(set(exec_res))}.\n"
         f"The columns of the view [{view_name}] are: {exec_columns}.\n"
         f"Sample rows (first 3):\n{exec_res_top3}"
     )
@@ -36,6 +37,7 @@ def generate_subsql_exec_note(subsql_node: SubSQLNode, db: Database) -> str:
         note = (
             f"Subquery: {sql}\n"
             f"Execution successful and the number of returned rows is: {len(exec_res)}.\n"
+            f"The number of unique rows is: {len(set(exec_res))}.\n"
             f"The returned columns are: {exec_columns}.\n"
             f"Sample rows (first 3):\n{exec_res_top3}"
         )
@@ -57,18 +59,19 @@ def generate_exec_note(sql_node: SQLNode, db: Database) -> Tuple[str, int]:
     elif len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
         note = "[Warning] The execution is successful but the returned rows are empty, which might result from the incorrect filtering conditions or the incorrect join conditions."
         warning_cnt = 10
-    elif (
-        len(exec_res) == 1
-        and len(exec_res[0]) == 1
-        and exec_res[0][0] == 0
-        and "COUNT" in sql
-    ):
-        note = "[Warning] The execution is successful but the COUNT result is zero, which might result from the incorrect filtering conditions or the incorrect join conditions."
-        warning_cnt = 10
+    # elif (
+    #     len(exec_res) == 1
+    #     and len(exec_res[0]) == 1
+    #     and exec_res[0][0] == 0
+    #     and "COUNT" in sql
+    # ):
+    #     note = "[Warning] The execution is successful but the COUNT result is zero, which might result from the incorrect filtering conditions or the incorrect join conditions."
+    #     warning_cnt = 10
     else:
         exec_res_top3 = get_exec_examples(exec_res)
         note = (
             f"[Info] The SQL query executed successfully and returned {len(exec_res)} row(s).\n"
+            f"The number of unique rows is: {len(set(exec_res))}.\n"
             f"The returned columns are: {exec_columns}.\n"
             f"Sample rows (first 3):\n{exec_res_top3}"
         )

@@ -28,7 +28,7 @@ class Column:
         self.desp = desp
 
     def get_val_examples(self):
-        sql = f"SELECT `{self.name}` FROM `{self.tb_name}` WHERE `{self.name}` IS NOT NULL AND `{self.name}` != '' GROUP BY `{self.name}` ORDER BY COUNT(*) DESC;"
+        sql = f"SELECT `{self.name}` FROM `{self.tb_name}` WHERE `{self.name}` IS NOT NULL AND `{self.name}` != '' GROUP BY `{self.name}` ORDER BY COUNT(*) DESC"
         if self.stats["number of distinct values"] > 20:
             sql += " LIMIT 10;"
         else:

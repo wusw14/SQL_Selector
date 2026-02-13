@@ -10,6 +10,7 @@ from utils import parse_json
 from selection import SQLNode
 from representation import get_relevant_rules
 from parser import SQLCollection, SQLNode
+from copy import deepcopy
 
 
 def get_prompt(
@@ -17,7 +18,7 @@ def get_prompt(
     sql_node1: SQLNode,
     sql_node2: SQLNode,
     rule_mode: str,
-    rule_dict: Dict[str, List[str]],
+    rules: List[str],
 ) -> str:
     base_info2 = f"""{base_info}
 
@@ -42,7 +43,7 @@ Notes on Execution Results: {sql_node2.notes["exec_note"]}
     if rule_mode == "none":
         comparison_prompt = get_simple_comparison_prompt(base_info2)
     else:
-        comparison_prompt = get_comparison_prompt(base_info2, rule_dict)
+        comparison_prompt = get_comparison_prompt(base_info2, rules)
     return comparison_prompt
 
 
@@ -53,7 +54,7 @@ def gen_comparison_notes(
     gt_sql_node: SQLNode,
     gen_sql_nodes: List[SQLNode],
     rule_mode: str,
-    rule_dict: Dict[str, List[str]] = None,
+    rules: List[str] = None,
 ):
     """
     Input: a list of preds need to be compared with the GT SQL
@@ -69,8 +70,9 @@ def gen_comparison_notes(
         base_info += f"**Evidence**\n{evidence}\n"
     prompts = []
     for gen_sql_node in gen_sql_nodes:
-        prompt = get_prompt(base_info, gt_sql_node, gen_sql_node, rule_mode, rule_dict)
+        prompt = get_prompt(base_info, gt_sql_node, gen_sql_node, rule_mode, rules)
         prompts.append(prompt)
+    # print(f"[DEBUG] [Prompt Example]\n{prompts[0]}")
     responses = llm_check(prompts, llm="Qwen3-30B")
     comparison_notes = []
     for i, response in enumerate(responses):
@@ -78,9 +80,9 @@ def gen_comparison_notes(
         try:
             correctness = int(note["better_sql"] == "SQL1")
         except:
-            if "better_sql" in note:
-                index = note["better_sql"].rindex("better_sql")
-                if "SQL1" in note["better_sql"][index:]:
+            if "better_sql" in note and type(note) == str:
+                index = note.rindex("better_sql")
+                if "SQL1" in note[index:]:
                     correctness = 1
                 else:
                     correctness = 0
@@ -102,16 +104,23 @@ def binary_comparison(
     qid_sql_collection: Dict[str, SQLCollection],
     rule_mode,
     representation_model,
+    db_qids: Dict[str, List[int]],
 ):
     # qid_sql_nodes is the SQL nodes for the question after the intra group selection
     qid_rules = {}
     for qid, sql_collection in qid_sql_collection.items():
-        qid_rules[qid] = sql_collection.rules
+        try:
+            qid_rules[qid] = sql_collection.rules[-1]
+        except:
+            pass
+    # print(f"len(qid_rules): {len(qid_rules)}")
+    # for qid, rules in qid_rules.items():
+    #     print(f"qid: {qid}, rules: {rules}")
     results = {}
     for qid in qids:
         sql_collection = qid_sql_collection[qid]
         gt_nodes = sql_collection.gt_sql_nodes
-        sql_nodes = sql_collection.incorrect_sql_nodes
+        sql_nodes = deepcopy(sql_collection.incorrect_sql_nodes)
         if (
             gt_nodes is None
             or len(gt_nodes) == 0
@@ -127,11 +136,17 @@ def binary_comparison(
         comparison_notes_all = []
         for gt_node in gt_nodes:
             if rule_mode != "none":
-                rule_dict = get_relevant_rules(
-                    qid, qid_rules, preds, representation_model, rule_mode, top_k=5
+                rules = get_relevant_rules(
+                    qid,
+                    qid_rules,
+                    preds,
+                    representation_model,
+                    rule_mode,
+                    top_k=5,
+                    exclude_qids=db_qids[sql_collection.db.db_name],
                 )
             else:
-                rule_dict = None
+                rules = None
             comparison_notes = gen_comparison_notes(
                 question,
                 evidence,
@@ -139,7 +154,7 @@ def binary_comparison(
                 gt_node,
                 sql_nodes,
                 rule_mode,
-                rule_dict,
+                rules,
             )
             comparison_notes_all.extend(comparison_notes)
         result = dict(info)

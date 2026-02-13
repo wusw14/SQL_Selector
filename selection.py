@@ -1,5 +1,5 @@
 from parser import SQLCollection, SQLNode
-from utils import execute_sql, execute_sql_wrapper, parse_result
+from utils import execute_sql, execute_sql_wrapper, parse_result, parse_json
 from typing import Dict, List, Any, Tuple
 from database import Database
 from sqlglot import parse_one, exp
@@ -12,7 +12,7 @@ from analyzer import (
 )
 import json
 import re
-from syntax import generate_join_note
+from syntax import generate_join_note, compare_tb_cols
 from execution import generate_exec_note
 from collections import defaultdict
 import pandas as pd
@@ -23,8 +23,18 @@ from comparison_note import (
     gen_group_by_note,
     gen_order_by_note,
     gen_filtering_logic_note,
+    compare_schema,
+    compare_top_n,
+    compare_aggregation,
+    compare_other,
 )
 from aspect import Aspect
+from prompts import (
+    intra_group_selection_prompt,
+    get_comparison_prompt,
+    get_simple_comparison_prompt,
+)
+from binary_comparison import get_prompt
 
 
 def create_view(
@@ -141,7 +151,7 @@ Output Format:
     return prompt
 
 
-def pointwise_selection(
+def syntax_level_selection(
     sql_collection: SQLCollection, question: str, evidence: str
 ) -> List[SQLNode]:
     sql_nodes = sql_collection.sql_nodes
@@ -163,56 +173,226 @@ def pointwise_selection(
         exec_note, exec_warning_cnt = generate_exec_note(sql_node, db)
         # generate notes for join conditions
         join_note, join_warning_cnt = generate_join_note(sql_node, db)
-        # get prompt for returned columns
-        returned_columns_prompts.append(
-            generate_returned_columns_prompt(question, evidence, schema_note, sql_node)
-        )
-        evidence_alignment_prompts.append(
-            generate_evidence_alignment_prompt(
-                question, evidence, schema_note, sql_node
-            )
-        )
+        # # get prompt for returned columns
+        # returned_columns_prompts.append(
+        #     generate_returned_columns_prompt(question, evidence, schema_note, sql_node)
+        # )
+        # evidence_alignment_prompts.append(
+        #     generate_evidence_alignment_prompt(
+        #         question, evidence, schema_note, sql_node
+        #     )
+        # )
         # filtering_conditions_prompts.append(
         #     generate_filtering_conditions_prompt(
         #         question, evidence, schema_note, sql_node
         #     )
         # )
-        sql_node.warning_cnt = (
+        sql_node.warning_cnt += (
             exec_warning_cnt + join_warning_cnt
         )  # + intent_warning_cnt
+        if " ||" in sql_node.org_sql:
+            sql_node.warning_cnt += 100
         sql_node.notes = {
             "exec_note": exec_note,
             "join_note": join_note,
             # "intent_note": intent_note,
         }
-    # collectively generate the notes for returned columns
-    returned_columns_notes = llm_check(returned_columns_prompts)
-    if evidence is not None and len(evidence.strip()) > 0:
-        evidence_alignment_notes = llm_check(evidence_alignment_prompts)
-    else:
-        evidence_alignment_notes = [None] * len(sql_nodes)
+    # # collectively generate the notes for returned columns
+    # returned_columns_notes = llm_check(returned_columns_prompts)
+    # if evidence is not None and len(evidence.strip()) > 0:
+    #     evidence_alignment_notes = llm_check(evidence_alignment_prompts)
+    # else:
+    #     evidence_alignment_notes = [None] * len(sql_nodes)
     # filtering_conditions_notes = llm_check(filtering_conditions_prompts)
-    for (
-        sql_node,
-        returned_columns_note,
-        evidence_alignment_note,
-        # filtering_conditions_note,
-    ) in zip(
-        sql_nodes,
-        returned_columns_notes,
-        evidence_alignment_notes,
-        # filtering_conditions_notes,
-    ):
-        sql_node.notes["returned_columns_note"] = returned_columns_note
-        if evidence_alignment_note is not None:
-            sql_node.notes["evidence_alignment_note"] = evidence_alignment_note
-            sql_node.evidence_alignment_score = update_evidence_alignment_score(
-                evidence_alignment_note
-            )
-        if sql_node.evidence_alignment_score > 0 and sql_node.warning_cnt < 100:
+    # for (
+    #     sql_node,
+    #     # returned_columns_note,
+    #     evidence_alignment_note,
+    #     # filtering_conditions_note,
+    # ) in zip(
+    #     sql_nodes,
+    #     # returned_columns_notes,
+    #     evidence_alignment_notes,
+    #     # filtering_conditions_notes,
+    # ):
+    #     # sql_node.notes["returned_columns_note"] = returned_columns_note
+    #     if evidence_alignment_note is not None:
+    #         sql_node.notes["evidence_alignment_note"] = evidence_alignment_note
+    #         sql_node.evidence_alignment_score = update_evidence_alignment_score(
+    #             evidence_alignment_note
+    #         )
+    #     if sql_node.evidence_alignment_score > 0 and sql_node.warning_cnt < 100:
+    #         filtred_sql_nodes.append(sql_node)
+    #     # sql_node.notes["filtering_conditions_note"] = filtering_conditions_note
+    for sql_node in sql_nodes:
+        if sql_node.warning_cnt < 100:
             filtred_sql_nodes.append(sql_node)
-        # sql_node.notes["filtering_conditions_note"] = filtering_conditions_note
-    return filtred_sql_nodes
+    if len(filtred_sql_nodes) == 0:
+        return sql_nodes
+    else:
+        return filtred_sql_nodes
+
+
+def group_sql_nodes(
+    sql_nodes: List[SQLNode], sql_cnt: Dict[str, int], filtering: bool = True
+) -> List[List[SQLNode]]:
+    grouped_sql_nodes = defaultdict(list)
+    for sql_node in sql_nodes:
+        grouped_sql_nodes[frozenset(sql_node.exec_res)].append(sql_node)
+    # keep only the top 3 groups of sqls with the same execution results
+    group_cnt = defaultdict(int)
+    for group, gp_sql_nodes in grouped_sql_nodes.items():
+        for sql_node in gp_sql_nodes:
+            group_cnt[group] += sql_cnt.get(sql_node.org_sql, 1)
+    sorted_group_cnt = sorted(group_cnt.items(), key=lambda x: x[1], reverse=True)
+    cnts = [cnt for group, cnt in sorted_group_cnt]
+    print(f"[DEBUG][cnts]: {cnts}")
+    threshold = cnts[2] if len(cnts) > 2 and filtering else 0
+    # threshold = max(sorted_group_cnt[0][1] // 2, threshold)
+    print(f"[DEBUG][threshold]: {threshold}")
+    filtered_grouped_sql_nodes = []
+    filtered_group_cnt = []
+    for group, cnt in sorted_group_cnt:
+        if cnt < threshold:
+            break
+        filtered_grouped_sql_nodes.append(grouped_sql_nodes[group])
+        filtered_group_cnt.append(cnt)
+    print(
+        f"[DEBUG][Group Filtering]: {len(grouped_sql_nodes)} -> {len(filtered_grouped_sql_nodes)}"
+    )
+    return filtered_grouped_sql_nodes, filtered_group_cnt
+
+
+def intra_group_selection(
+    sql_collection: SQLCollection,
+    question: str,
+    evidence: str,
+    grouped_sql_nodes: List[List[SQLNode]],
+) -> List[SQLNode]:
+    """
+    Select the best sql from each group
+    """
+    intra_group_selected_sqls = []
+    prompts = []
+    group_sizes = []
+    schema_note = collect_schema_info(sql_collection.table_columns, sql_collection.db)
+    grouped_sql_nodes_tobe_selected = []
+    for gp_sql_nodes in grouped_sql_nodes:
+        if len(gp_sql_nodes) == 1:
+            intra_group_selected_sqls.append(gp_sql_nodes[0])
+            continue
+        prompt = intra_group_selection_prompt(
+            question, evidence, schema_note, gp_sql_nodes
+        )
+        prompts.append(prompt)
+        group_sizes.append(len(gp_sql_nodes))
+        grouped_sql_nodes_tobe_selected.append(gp_sql_nodes)
+    # print(f"[DEBUG][prompts]: {prompts[0]}")
+    if len(prompts) == 0:
+        return intra_group_selected_sqls
+    llm_responses = llm_check(prompts)
+    selected_ids = []
+    for llm_response in llm_responses:
+        response = parse_json(llm_response)
+        try:
+            selected_id = response["best_sql"]
+            selected_ids.append(int(selected_id.replace("SQL", "")) - 1)
+        except:
+            selected_ids.append(0)
+    print(f"[DEBUG][selected_ids]: {selected_ids}")
+    print(f"[DEBUG][size of each group]: {group_sizes}")
+    for gp, selected_id in enumerate(selected_ids):
+        selected_id = selected_id % group_sizes[gp]
+        intra_group_selected_sqls.append(
+            grouped_sql_nodes_tobe_selected[gp][selected_id]
+        )
+    return intra_group_selected_sqls
+
+
+def inter_group_selection(
+    sql_collection: SQLCollection,
+    question: str,
+    evidence: str,
+    intra_group_selected_sqls: List[SQLNode],
+    rules: List[str],
+    rule_mode: str,
+) -> Tuple[SQLNode, str]:
+    """
+    Select the best sql from the intra group selected sqls
+    """
+    base_info = f"""**Schema**
+{collect_schema_info(sql_collection.table_columns, sql_collection.db)}
+
+**NL Query**
+{question}
+**Evidence**
+{evidence}
+"""
+    comparison_prompts = []
+    pairs = []
+    sql_node_votes = defaultdict(float)
+    for i, sql_node1 in enumerate(intra_group_selected_sqls):
+        for j, sql_node2 in enumerate(intra_group_selected_sqls):
+            if i == j:
+                continue
+            # if_same_schema = compare_tb_cols(sql_node1, sql_node2)
+            # if not if_same_schema:
+            #     router_type = "other"
+            #     router = compare_other
+            cover_flag = False
+            if len(sql_node1.exec_res[0]) > len(sql_node2.exec_res[0]):
+                cover_flag = if_align_exec_res_with_gt(
+                    sql_node1.exec_res, sql_node2.exec_res
+                )
+                if cover_flag:
+                    sql_node_votes[sql_node1] += 1
+                    sql_node_votes[sql_node2] += 0
+            elif len(sql_node1.exec_res[0]) < len(sql_node2.exec_res[0]):
+                cover_flag = if_align_exec_res_with_gt(
+                    sql_node2.exec_res, sql_node1.exec_res
+                )
+                if cover_flag:
+                    sql_node_votes[sql_node2] += 1
+                    sql_node_votes[sql_node1] += 0
+            if cover_flag:
+                continue
+            pairs.append((sql_node1, sql_node2))
+            comparison_prompt = get_prompt(
+                base_info, sql_node1, sql_node2, rule_mode, rules
+            )
+            comparison_prompts.append(comparison_prompt)
+    comparison_notes = []
+    if len(comparison_prompts) == 0:
+        return sql_node_votes, comparison_notes
+    llm_responses = llm_check(comparison_prompts)
+    for i, (sql_node1, sql_node2) in enumerate(pairs):
+        llm_response = llm_responses[i]
+        response = parse_json(llm_response)
+        if type(response) == dict:
+            better_sql = response["better_sql"]
+            if better_sql == "SQL1":
+                sql_node_votes[sql_node1] += 1
+                sql_node_votes[sql_node2] += 0
+            elif better_sql == "SQL2":
+                sql_node_votes[sql_node2] += 1
+                sql_node_votes[sql_node1] += 0
+            else:
+                sql_node_votes[sql_node1] += 0.5
+                sql_node_votes[sql_node2] += 0.5
+        else:
+            sql_node_votes[sql_node1] += 0.5
+            sql_node_votes[sql_node2] += 0.5
+        comparison_notes.append(
+            {
+                "SQL1": sql_node1.org_sql,
+                "SQL2": sql_node2.org_sql,
+                "comparison_note": llm_response,
+            }
+        )
+        print("-" * 100)
+        # print(f"[DEBUG][prompt]: {comparison_prompts[i]}")
+        print(f"[DEBUG][comparison_notes]: {comparison_notes[-1]}")
+    return sql_node_votes, comparison_notes
 
 
 def update_evidence_alignment_score(evidence_alignment_note: str) -> float:
@@ -379,84 +559,30 @@ Schema: {schema_note}
 SQL1: {sql_node1.org_sql}
 SQL2: {sql_node2.org_sql}
 """
-    score1, score2 = 0, 0
-    comparison_note_dict = {}
-    # Aspect 1: GROUP BY Clause if exists
-    group_by_note = gen_group_by_note(sql_node1, sql_node2)
-    if group_by_note is not None:
-        comparison_note_dict["group_by"] = group_by_note
-    # Aspect 2: ORDER BY Clause if exists
-    order_by_note = gen_order_by_note(sql_node1, sql_node2)
-    if order_by_note is not None:
-        comparison_note_dict["order_by"] = order_by_note
-    # Aspect 3: Filtering Logic
-    filtering_logic_note = gen_filtering_logic_note(sql_node1, sql_node2)
-    if filtering_logic_note is not None:
-        # comparison_note_dict["filtering"] = filtering_logic_note
-        comparison_note_dict["filtering"] = None
-    # Aspect 4: returned columns (Final SELECT Clause)
-    sql1_unaligned_cols, sql2_unaligned_cols = same_returned_columns(
-        sql_node1, sql_node2
-    )
-    if len(sql1_unaligned_cols) > 0 and len(sql2_unaligned_cols) > 0:
-        col_comparison_note = gen_col_comparison_note(
-            sql_node1,
-            sql_node2,
-            sql1_unaligned_cols,
-            sql2_unaligned_cols,
-        )
-        comparison_note_dict["returned_columns"] = col_comparison_note
-    elif len(sql1_unaligned_cols) > 0:
-        score1 += 0.5
-    elif len(sql2_unaligned_cols) > 0:
-        score2 += 0.5
-    overall_comparison_prompt = get_overall_comparison_prompt(
-        question, evidence, schema_note, sql_node1, sql_node2, comparison_note_dict
-    )
-    aspect_dict = {}
-    aspect_prompts = []
-    for aspect_name, note in comparison_note_dict.items():
-        aspect_dict[aspect_name] = Aspect(aspect_name, base_info, note)
-        aspect_prompts.append(aspect_dict[aspect_name].get_prompt())
-    if len(aspect_prompts) > 0:
-        aspect_eval_results = llm_check(aspect_prompts)
-        for aspect_name, aspect_eval_result in zip(
-            comparison_note_dict.keys(), aspect_eval_results
-        ):
-            # if aspect_name == "filtering":
-            #     other_info = {
-            #         "SQL1": sql_node1.notes["filtering_conditions_note"],
-            #         "SQL2": sql_node2.notes["filtering_conditions_note"],
-            #     }
-            # else:
-            other_info = None
-            better_sql = aspect_dict[aspect_name].parse_output(
-                aspect_eval_result, other_info
-            )
-            if better_sql == "SQL1":
-                score1 += 1
-            elif better_sql == "SQL2":
-                score2 += 1
-            comparison_note_dict[aspect_name] = aspect_eval_result
-    if score1 - score2 > 1:
-        return "SQL1", comparison_note_dict
-    elif score2 - score1 > 1:
-        return "SQL2", comparison_note_dict
 
-    # do the overall comparison
-    overall_res = llm_check([overall_comparison_prompt])[0]
-    better_sql = parse_result(overall_res)
-    if better_sql == "SQL1":
-        score1 += 1
-    elif better_sql == "SQL2":
-        score2 += 1
-    if score1 > score2:
-        better_sql = "SQL1"
-    elif score2 > score1:
-        better_sql = "SQL2"
+    # compare if the schema is the same for the two SQLs
+    if_same_schema = compare_tb_cols(sql_node1, sql_node2)
+    if not if_same_schema:
+        router_type = "other"
+        router = compare_other
+    elif query_type == 1:
+        router_type = "top_n"
+        router = compare_top_n
+    elif query_type == 2:
+        router_type = "aggregation"
+        router = compare_aggregation
     else:
-        better_sql = "Unsure"
+        router_type = "other"
+        router = compare_other
+    comparison_prompt = router(base_info, sql_node1, sql_node2)
+    # print(comparison_prompt)
+    # print("\n" * 5)
+    comparison_note_dict = {"router_type": router_type}
+    # do the overall comparison
+    overall_res = llm_check([comparison_prompt])[0]
+    better_sql = parse_result(overall_res)
     comparison_note_dict["overall"] = overall_res
+    comparison_note_dict["better_sql"] = better_sql
     return better_sql, comparison_note_dict
 
 
