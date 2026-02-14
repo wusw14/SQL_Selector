@@ -48,10 +48,17 @@ def get_exec_examples(result) -> str:
             # print(type(val))
             if isinstance(val, str) and len(val) > 100:
                 row_new.append(val[:100] + "...")
-            elif isinstance(val, list) and len(val) > 100:
-                row_new.append(val[:100] + ["..."])
-            elif isinstance(val, tuple) and len(val) > 100:
-                row_new.append(val[:100] + ("...",))
+            elif isinstance(val, list) or isinstance(val, tuple):
+                val_abbr = []
+                for v in val_abbr:
+                    if len(f"{v}") > 100:
+                        val_abbr.append(f"{v[:100]}...")
+                    else:
+                        val_abbr.append(f"{v}")
+                if len(val_abbr) > 100:
+                    val_abbr = val_abbr[:100] + ["..."]
+                else:
+                    row_new.append(val_abbr)
             else:
                 row_new.append(val)
         result_top3.append(f"{row_new}")
