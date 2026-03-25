@@ -43,7 +43,14 @@ Notes on Execution Results: {sql_node2.notes["exec_note"]}
     if rule_mode == "none":
         comparison_prompt = get_simple_comparison_prompt(base_info2)
     else:
-        comparison_prompt = get_comparison_prompt(base_info2, rules)
+        relevant_rules = []
+        for i, rule in enumerate(rules):
+            if sql_node1.score_each_rule[i] == 0 or sql_node2.score_each_rule[i] == 0:
+                relevant_rules.append(rule)
+        if len(relevant_rules) > 0:
+            comparison_prompt = get_comparison_prompt(base_info2, relevant_rules)
+        else:
+            comparison_prompt = get_simple_comparison_prompt(base_info2)
     return comparison_prompt
 
 

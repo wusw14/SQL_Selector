@@ -7,6 +7,8 @@ selector_list = [
     "minbug",
     "exec",
     "join",
+    "gen_verifier_Qwen3.5",
+    "manual_rule",
     # "our_0120",
     # "our_0121",
     # "our_0126",

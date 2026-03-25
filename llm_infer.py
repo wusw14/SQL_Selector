@@ -35,6 +35,10 @@ def generate_response(prompt, llm="Qwen3-30B"):
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
+        extra_body={
+            "top_k": 20,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
     return response.choices[0].message.content
 

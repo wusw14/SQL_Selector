@@ -106,6 +106,10 @@ class SQLNode:
         self.coverage = 0
         self.evidence_alignment_score = 1
         self.acc = None
+        self.rule_score = 0
+        self.score_each_rule = []
+        self.relevance_each_rule = []
+        self.rule_note = []
 
     def find_table_columns(self) -> Tuple[Set[str], Set[str]]:
         tables = set()
@@ -168,6 +172,8 @@ class SQLCollection:
         self.table_columns = self.find_table_columns()
         self.intra_selected_sql_nodes = []
         self.rules = []
+        self.filtered_rules = []
+        self.rule_scores = {}
         self.schema_note = collect_schema_info(self.table_columns, self.db)
         self.info = info
         self.gt_sql_nodes = None  # the SQL nodes for the ground truth

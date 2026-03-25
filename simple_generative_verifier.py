@@ -3,24 +3,19 @@ from parser import SQLCollection
 from memory import Memory
 from loader import load_data, load_preds, load_all_preds
 from selection import (
-    collective_selection,
     syntax_level_selection,
-    rank_sql_nodes,
-    exhaustive_pairwise,
-    filter_by_returned_columns,
     group_sql_nodes,
-    intra_group_selection,
-    inter_group_selection,
+    generative_verifier,
 )
-from analyzer import classify_query_type
 import argparse
 from typing import Tuple
 import time
 import os
 import json
 from collections import defaultdict
-from representation import Representation, get_relevant_rules
+from representation import Representation, get_relevant_rules, get_representation
 import numpy as np
+from rule_lib import load_rule_collection
 
 verifier = os.getenv("MODEL_ABBR")
 
@@ -29,7 +24,7 @@ def parse_option():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_name", type=str, default="birddev")
     parser.add_argument("--method_name", type=str, default="alphasql")
-    parser.add_argument("--model_name", type=str, default="7B")
+    parser.add_argument("--model_name", type=str, default="Qwen2.5-7B")
     parser.add_argument("--selector", type=str, default="intent_1229")
     parser.add_argument(
         "--rule_mode",
@@ -42,29 +37,14 @@ def parse_option():
 
 if __name__ == "__main__":
     args = parse_option()
+    print(args)
     qid_info = load_data(args.dataset_name)
-    qid_info = {
-        qid: info
-        for qid, info in qid_info.items()
-        if info["db_id"] == "california_schools"
-    }
+    # qid_info = {
+    #     qid: info for qid, info in qid_info.items() if info["db_id"] == "superhero"
+    # }
     qid_pred, qid_sql_cnt = load_preds(
         args.method_name, args.dataset_name, args.model_name
     )
-    rule_qid_preds, _ = load_all_preds(args)
-    rule_file = "results/birddev/alphasql/iterative_rules/superhero+card_games/t=3.json"
-    qid_rules = json.load(open(rule_file, "r"))
-    qid_rules = {
-        int(qid): item["rules"][-1]
-        for qid, item in qid_rules.items()
-        if len(item["rules"]) > 0
-    }
-    rule_qid_preds = {
-        qid: preds for qid, preds in rule_qid_preds.items() if qid in qid_rules
-    }
-    representation_model = Representation(rule_qid_preds)
-    query_vectors = representation_model.query_vectors
-    print(f"len(query_vectors): {len(query_vectors)}")
     print(f"len(qid_info): {len(qid_info)}")
     print(f"len(qid_pred): {len(qid_pred)}")
     print(f"len(qid_sql_cnt): {len(qid_sql_cnt)}")
@@ -74,7 +54,7 @@ if __name__ == "__main__":
     qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{args.selector}.json")
-    if os.path.exists(output_file):
+    if os.path.exists(output_file) and "debug" not in args.selector:
         with open(output_file, "r") as f:
             results = json.load(f)
     else:
@@ -151,7 +131,9 @@ if __name__ == "__main__":
             results[qid] = {
                 "sql_logs": [],
                 "selected_sql": selected_sql,
+                "selected_acc": sql_acc_dict.get(selected_sql, 0),
                 "time_cost": time.time() - start_time,
+                "comparison_notes": [],
             }
             continue
         print(f"[QID]: {qid}, [DB Name]: {db_name}")
@@ -164,6 +146,10 @@ if __name__ == "__main__":
         if len(sql_nodes) == 0:
             selected_sql = preds[0]
             results[qid] = {
+                "db_id": info["db_id"],
+                "question": info["question"],
+                "evidence": info["evidence"],
+                "SQL": info["SQL"],
                 "selected_sql": selected_sql,
                 "selected_acc": sql_acc_dict.get(selected_sql, 0),
                 "time_cost": time.time() - start_time,
@@ -171,12 +157,10 @@ if __name__ == "__main__":
                 "comparison_notes": [],
             }
             continue
-        print("=====Rule-based Selection=====")
-        # TODO: score each sql node by checking a list of rules
         original_size = len(preds)
         syntax_filtered_size = len(sql_nodes)
         print(f"syntax_filtered: {original_size} -> {syntax_filtered_size}")
-        # keep only the top 3 groups of sqls with the same execution results
+
         print("=====Majority Voting Selection=====")
         sql_cnt = qid_sql_cnt.get(qid, {})
         grouped_sql_nodes, filtered_group_cnt = group_sql_nodes(sql_nodes, sql_cnt)
@@ -184,6 +168,10 @@ if __name__ == "__main__":
         if len(grouped_sql_nodes) <= 1:
             selected_sql = sql_nodes[0].org_sql
             results[qid] = {
+                "db_id": info["db_id"],
+                "question": info["question"],
+                "evidence": info["evidence"],
+                "SQL": info["SQL"],
                 "selected_sql": selected_sql,
                 "selected_acc": sql_acc_dict.get(selected_sql, 0),
                 "time_cost": time.time() - start_time,
@@ -191,32 +179,9 @@ if __name__ == "__main__":
                 "comparison_notes": [],
             }
             continue
-        # select the best sql from each group
-        print("=====Intra Group Selection=====")
-        intra_group_selected_sqls = intra_group_selection(
-            sql_collection, question, evidence, grouped_sql_nodes
-        )
-        print("=====Inter Group Selection=====")
-        rules = get_relevant_rules(
-            qid,
-            qid_rules,
-            preds,
-            representation_model,
-            args.rule_mode,
-            top_k=5,
-            exclude_qids=db_qids[db_name],
-        )
-        # print("[DEBUG][rule_dict]")
-        # for rule_category, rules in rule_dict.items():
-        #     print(f"[DEBUG][rule_category]: {rule_category}")
-        #     print(f"[DEBUG][rules]: {rules}")
-        sql_node_votes, comparison_notes = inter_group_selection(
-            sql_collection,
-            question,
-            evidence,
-            intra_group_selected_sqls,
-            rules,
-            args.rule_mode,
+
+        sql_node_votes = generative_verifier(
+            sql_collection, question, evidence, sql_nodes
         )
         print("=====Final Selection=====")
         for sql_node in sql_node_votes:
@@ -229,11 +194,6 @@ if __name__ == "__main__":
         )
         selected_sql_node = sorted_sql_node_votes[0][0]
         selected_sql = selected_sql_node.org_sql
-        # selected_sql, comparison_notes = exhaustive_pairwise(
-        #     sql_collection, question, evidence, sql_nodes
-        # )
-        # selected_sql = None
-        # comparison_notes = []
         print("\n" * 5)
         sql_logs = []
         for sql_node, vote in sorted_sql_node_votes:
@@ -248,8 +208,6 @@ if __name__ == "__main__":
             sql_logs.append(
                 {
                     "sql": sql_node.org_sql,
-                    "notes": sql_node.notes,
-                    "warning_cnt": sql_node.warning_cnt,
                     "exec_stats": exec_stats,
                     "vote": round(vote, 3),
                     "acc": sql_acc_dict.get(sql_node.org_sql, 0),
@@ -260,7 +218,6 @@ if __name__ == "__main__":
         result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
         result["time_cost"] = time.time() - start_time
         result["sql_logs"] = sql_logs
-        result["comparison_notes"] = comparison_notes
         results[qid] = result
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)

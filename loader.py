@@ -93,9 +93,9 @@ def load_all_preds(args):
     qid_preds = defaultdict(list)
     qid_sql_acc = defaultdict(dict)
     for llm in llm_list:
-        qid_pred, _ = load_preds(args.method_name, args.dataset_name, llm)
+        qid_pred, _ = load_preds("alphasql", args.dataset_name, llm)
         qid_gp_sql_acc_file = (
-            f"eval_results/{args.dataset_name}/{args.method_name}/{llm}/gp_sql_acc.json"
+            f"eval_results/{args.dataset_name}/alphasql/{llm}/gp_sql_acc.json"
         )
         qid_gp_sql_acc = json.load(open(qid_gp_sql_acc_file, "r"))
         for qid, preds in qid_pred.items():

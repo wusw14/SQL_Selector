@@ -4,9 +4,14 @@ Only generate rules for the incorrect cases
 """
 
 from parser import SQLCollection
-from prompts import get_rule_generation_prompt, get_rule_integration_prompt
+from prompts import (
+    get_rule_generation_prompt,
+    get_rule_integration_prompt,
+    get_rule_generality_and_clarity_evaluation_prompt,
+)
 from llm_infer import llm_check
-from typing import Dict
+from typing import Dict, List
+from utils import parse_json
 
 
 def rule_gen(
@@ -22,9 +27,6 @@ def rule_gen(
             historical_rules = qid_sql_collection[qid].rules[-1]
         else:
             historical_rules = []
-        if len(historical_rules) > 5:
-            print(qid, historical_rules)
-            exit()
         sql_exec_notes = {}
         for sql_node in qid_sql_collection[qid].sql_nodes:
             sql_exec_notes[sql_node.org_sql] = sql_node.notes["exec_note"]
@@ -70,3 +72,23 @@ def rule_gen(
             rules = raw_rules
         qid_sql_collection[qid].rules.append(rules)
     return qid_sql_collection
+
+
+def eval_rule_generality_and_clarity(rules: List[str]):
+    rule_generality, rule_clarity = {}, {}
+    prompts = []
+    for rule in rules:
+        prompt = get_rule_generality_and_clarity_evaluation_prompt(rule)
+        prompts.append(prompt)
+    responses = llm_check(prompts, llm="deepseek")
+    for rule, response in zip(rules, responses):
+        response = parse_json(response)
+        if type(response) == dict:
+            generality = response.get("Generality", "Low")
+            clarity = response.get("Clarity", "Low")
+        else:
+            generality = "Low"
+            clarity = "Low"
+        rule_generality[rule] = 1 if generality == "High" else 0
+        rule_clarity[rule] = 1 if clarity == "High" else 0
+    return rule_generality, rule_clarity

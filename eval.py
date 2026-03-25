@@ -169,19 +169,12 @@ def load_selected(args):
         else:
             raise ValueError(f"Invalid method name: {args.method_name}")
         qid_sqls, qid_selected = load_minbug_qid_sqls(file_name)
-    elif (
-        args.selector in ["exec", "table", "join"]
-        or "intent" in args.selector
-        or "pairwise" in args.selector
-        or "our" in args.selector
-    ):
-        file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
-        qid_sqls, qid_selected = load_qid_sqls(file_name)
     elif "exhaustive" in args.selector:
         file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
         qid_sqls, qid_selected = refine_selection(file_name, args)
     else:
-        raise ValueError(f"Invalid selector: {args.selector}")
+        file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
+        qid_sqls, qid_selected = load_qid_sqls(file_name)
     return qid_sqls, qid_selected
 
 
@@ -275,7 +268,7 @@ if __name__ == "__main__":
                 maj_lower_acc = min(maj_lower_acc, gp_acc[gp])
                 maj_upper_acc = max(maj_upper_acc, gp_acc[gp])
                 max_vote_cnt += 1
-        if "our" not in args.selector:
+        if args.selector in ["majority", "minbug", "exec", "join", "exhaustive"]:
             if max_vote_cnt > 1:
                 selected_acc = maj_upper_acc / max_vote_cnt
             else:
@@ -324,7 +317,7 @@ if __name__ == "__main__":
     selected_acc_ratio = selected_acc_sum / len(qid_info) * 100
     method_name = f"{args.method_name}({args.model_name})"
     output_list = [f"{method_name:^30}"]
-    output_list.append(f"{args.selector:^10}")
+    output_list.append(f"{args.selector:^20}")
     output_list.append(f"{lower_acc_ratio:.2f}%")
     output_list.append(f"{upper_acc_ratio:.2f}%")
     output_list.append(f"{maj_lower_acc_ratio:.2f}%")

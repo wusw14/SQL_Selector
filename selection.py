@@ -33,8 +33,11 @@ from prompts import (
     intra_group_selection_prompt,
     get_comparison_prompt,
     get_simple_comparison_prompt,
+    get_rule_evaluation_prompt,
+    get_generative_verifier_prompt,
 )
 from binary_comparison import get_prompt
+from rule_lib import RuleCollection
 
 
 def create_view(
@@ -320,6 +323,8 @@ def inter_group_selection(
     """
     Select the best sql from the intra group selected sqls
     """
+    if len(intra_group_selected_sqls) == 1:
+        return {intra_group_selected_sqls[0]: 1}, []
     base_info = f"""**Schema**
 {collect_schema_info(sql_collection.table_columns, sql_collection.db)}
 
@@ -393,6 +398,22 @@ def inter_group_selection(
         # print(f"[DEBUG][prompt]: {comparison_prompts[i]}")
         print(f"[DEBUG][comparison_notes]: {comparison_notes[-1]}")
     return sql_node_votes, comparison_notes
+
+
+def final_adjustment(
+    selected_sql_node: SQLNode,
+    sql_nodes: List[SQLNode],
+) -> SQLNode:
+    """
+    Find the covered sql
+    """
+    for sql_node in sql_nodes:
+        cover_flag = if_align_exec_res_with_gt(
+            sql_node.exec_res, selected_sql_node.exec_res
+        )
+        if cover_flag:
+            selected_sql_node = sql_node
+    return selected_sql_node
 
 
 def update_evidence_alignment_score(evidence_alignment_note: str) -> float:
@@ -867,7 +888,6 @@ Evidence: {evidence}
 Candidate Column Sets:
 {candidate_columns_formatted}
 """
-    print(f"[DEBUG][prompt]:\n{prompt}")
     res = llm_check([prompt])[0]
     start_idx = res.find("{")
     end_idx = res.rfind("}") + 1
@@ -893,3 +913,80 @@ Candidate Column Sets:
             filtered_sql_nodes.append(sqlnode)
     sql_collection.sql_nodes = filtered_sql_nodes
     return filtered_sql_nodes
+
+
+def rule_based_selection(
+    sql_collection: SQLCollection,
+    sql_nodes: List[SQLNode],
+    question: str,
+    evidence: str,
+    rules: List[str],
+):
+    schema_note = collect_schema_info(sql_collection.table_columns, sql_collection.db)
+    prompts = []
+    for sql_node in sql_nodes:
+        for rule in rules:
+            prompt = get_rule_evaluation_prompt(
+                question, evidence, schema_note, sql_node, rule
+            )
+            # print(f"[DEBUG][prompt]:\n{prompt}")
+            prompts.append(prompt)
+    responses = llm_check(prompts)
+    max_score = 0
+    for i, sql_node in enumerate(sql_nodes):
+        score = 0
+        for j, rule in enumerate(rules):
+            response = responses[i * len(rules) + j]
+            answer = parse_json(response)
+            if type(answer) != dict or "violation" not in answer:
+                score += 0.5
+                sql_node.score_each_rule.append(0.5)
+            elif answer["violation"] == "No":
+                score += 1
+                sql_node.score_each_rule.append(1)
+            elif answer["violation"] == "Yes":
+                score += 0
+                sql_node.score_each_rule.append(0)
+                sql_node.rule_note.append(f"Rule {j}, Reason: {answer['reason']}")
+            else:
+                score += 0.5
+                sql_node.score_each_rule.append(0.5)
+            if type(answer) != dict or "relevance" not in answer:
+                sql_node.relevance_each_rule.append("Unsure")
+            else:
+                sql_node.relevance_each_rule.append(answer["relevance"])
+        sql_node.rule_score = score
+        max_score = max(max_score, score)
+    sql_node_votes = defaultdict(float)
+    for sql_node in sql_nodes:
+        sql_node_votes[sql_node] = sql_node.rule_score
+    return sql_node_votes
+
+
+def generative_verifier(
+    sql_collection: SQLCollection,
+    question: str,
+    evidence: str,
+    sql_nodes: List[SQLNode],
+) -> List[SQLNode]:
+    schema_note = collect_schema_info(sql_collection.table_columns, sql_collection.db)
+    sql_node_votes = defaultdict(float)
+    prompts = []
+    for sql_node in sql_nodes:
+        prompt = get_generative_verifier_prompt(
+            question, evidence, schema_note, sql_node
+        )
+        prompts.append(prompt)
+    responses = llm_check(prompts)
+    for i, sql_node in enumerate(sql_nodes):
+        response = responses[i]
+        answer = parse_json(response)
+        if type(answer) != dict:
+            sql_node_votes[sql_node] = 0.5
+        elif answer["correctness"] == "Yes":
+            sql_node_votes[sql_node] = 1
+        elif answer["correctness"] == "No":
+            sql_node_votes[sql_node] = 0
+        else:
+            sql_node_votes[sql_node] = 0.5
+    return sql_node_votes
