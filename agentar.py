@@ -19,6 +19,7 @@ from collections import defaultdict
 from representation import Representation, get_relevant_rules, get_representation
 import numpy as np
 from rule_lib import load_rule_collection
+import random
 
 verifier = os.getenv("MODEL_ABBR")
 
@@ -38,12 +39,12 @@ def parse_option():
     parser.add_argument("--dataset_name", type=str, default="birddev")
     parser.add_argument("--method_name", type=str, default="alphasql")
     parser.add_argument("--model_name", type=str, default="Qwen2.5-7B")
-    parser.add_argument("--selector", type=str, default="intent_1229")
+    parser.add_argument("--selector", type=str, default="chase")
     parser.add_argument(
         "--rule_mode",
         type=str,
         choices=["none", "random", "relevant", "ideal"],
-        default="relevant",
+        default="none",
     )
     return parser.parse_args()
 
@@ -51,6 +52,8 @@ def parse_option():
 if __name__ == "__main__":
     args = parse_option()
     qid_info = load_data(args.dataset_name)
+    # set seed
+    random.seed(42 + int(args.selector[-1]))
     # qid_info = {
     #     qid: info for qid, info in qid_info.items() if info["db_id"] == "superhero"
     # }
@@ -58,18 +61,6 @@ if __name__ == "__main__":
     qid_pred, qid_sql_cnt = load_preds(
         args.method_name, args.dataset_name, args.model_name
     )
-    rule_collection = load_rule_collection(
-        "results/birddev/alphasql/iterative_rules/full_dev/rule_with_cond.json"
-    )
-    rule_qid_preds, _ = load_all_preds(args)
-    rule_qid_preds = {
-        qid: preds
-        for qid, preds in rule_qid_preds.items()
-        if qid in rule_collection.qids
-    }
-    representation_model = Representation(rule_qid_preds)
-    query_vectors = representation_model.query_vectors
-    print(f"len(query_vectors): {len(query_vectors)}")
     print(f"len(qid_info): {len(qid_info)}")
     print(f"len(qid_pred): {len(qid_pred)}")
     print(f"len(qid_sql_cnt): {len(qid_sql_cnt)}")
@@ -161,85 +152,29 @@ if __name__ == "__main__":
             continue
         print(f"[QID]: {qid}, [DB Name]: {db_name}")
         print(f"[Question]: {question}")
-        # query_type = classify_query_type(question)
-        # # print("=====Filtering by Returned Columns=====")
-        # sql_nodes = filter_by_returned_columns(sql_collection, question, evidence)
-        print("=====Syntax Level Selection=====")
-        sql_nodes = syntax_level_selection(sql_collection, question, evidence)
-        if len(sql_nodes) == 0:
-            selected_sql = preds[0]
-            results[qid] = {
-                "selected_sql": selected_sql,
-                "selected_acc": sql_acc_dict.get(selected_sql, 0),
-                "time_cost": time.time() - start_time,
-                "sql_logs": [],
-                "comparison_notes": [],
-            }
-            continue
-        original_size = len(preds)
-        syntax_filtered_size = len(sql_nodes)
-        print(f"syntax_filtered: {original_size} -> {syntax_filtered_size}")
 
-        print("=====Grouping=====")
+        sql_nodes = syntax_level_selection(sql_collection, question, evidence)
+        print("=====Pairwise Selection=====")
         sql_cnt = qid_sql_cnt.get(qid, {})
         grouped_sql_nodes, filtered_group_cnt = group_sql_nodes(sql_nodes, sql_cnt)
-        print(f"filtered groups: {len(grouped_sql_nodes)}")
-        if len(grouped_sql_nodes) <= 1:
-            selected_sql = sql_nodes[0].org_sql
-            results[qid] = {
-                "selected_sql": selected_sql,
-                "selected_acc": sql_acc_dict.get(selected_sql, 0),
-                "time_cost": time.time() - start_time,
-                "sql_logs": [],
-                "comparison_notes": [],
-            }
-            continue
-
-        print("=====Rule-based Selection=====")
-        rep = get_representation(preds)
-        # rules = rule_collection.retrieve(rep, top_k=10)
-        sqls = [sql_node.org_sql for sql_node in sql_nodes]
-        rules = rule_collection.retrieve_relevant(sqls, qid)
-        print(rules)
-        sql_node_votes = rule_based_selection(
-            sql_collection, sql_nodes, question, evidence, rules
-        )
-        max_vote = max(sql_node_votes.values())
-        print(f"[DEBUG] max vote: {max_vote}")
-        print(sql_node_votes)
-        filtered_sql_nodes = []
+        rep_sql_nodes = []
         for grouped_nodes in grouped_sql_nodes:
-            for sql_node in grouped_nodes:
-                if sql_node_votes[sql_node] == max_vote:
-                    filtered_sql_nodes.append(sql_node)
-                    break
-        print(f"[DEBUG] Filtered SQL Nodes: {len(filtered_sql_nodes)}")
-
-        print("=====Pairwise Selection=====")
-        # TODO: for those achieves the highest score in rule-based selection
-        # For each group, select one SQL
+            # randomly sample one node
+            rep_sql_node = random.choice(grouped_nodes)
+            rep_sql_nodes.append(rep_sql_node)
         filtered_sql_node_votes, comparison_notes = inter_group_selection(
             sql_collection,
             question,
             evidence,
-            filtered_sql_nodes,
+            rep_sql_nodes,
             rules,
             args.rule_mode,
         )
-        print(f"[DEBUG] SQL Node Votes: {filtered_sql_node_votes}")
 
-        print("=====Final Selection=====")
-        for sql_node, vote in filtered_sql_node_votes.items():
-            for gp, cnt in zip(grouped_sql_nodes, filtered_group_cnt):
-                if sql_node in gp:
-                    sql_node_votes[sql_node] += cnt * 1e-3 + vote
-                    break
         sorted_sql_node_votes = sorted(
-            sql_node_votes.items(), key=lambda x: x[1], reverse=True
+            filtered_sql_node_votes.items(), key=lambda x: x[1], reverse=True
         )
         selected_sql_node = sorted_sql_node_votes[0][0]
-        # find the covered sql
-        selected_sql_node = final_adjustment(selected_sql_node, sql_nodes)
         selected_sql = selected_sql_node.org_sql
         print("\n" * 5)
         sql_logs = []
@@ -255,21 +190,17 @@ if __name__ == "__main__":
             sql_logs.append(
                 {
                     "sql": sql_node.org_sql,
-                    "notes": sql_node.notes,
                     "warning_cnt": sql_node.warning_cnt,
                     "exec_stats": exec_stats,
                     "vote": round(vote, 3),
                     "acc": sql_acc_dict.get(sql_node.org_sql, 0),
-                    "score_each_rule": sql_node.score_each_rule,
-                    "rule_note": sql_node.rule_note,
                 }
             )
         result = dict(info)
         result["selected_sql"] = selected_sql
         result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
         result["time_cost"] = time.time() - start_time
-        result["rules"] = rules
-        result["comparison_notes"] = comparison_notes
+        # result["comparison_notes"] = comparison_notes
         result["sql_logs"] = sql_logs
         results[qid] = result
         with open(output_file, "w") as f:

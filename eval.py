@@ -288,7 +288,10 @@ if __name__ == "__main__":
             with open(output_file, "w") as f:
                 json.dump(eval_dict, f, indent=2, ensure_ascii=False)
 
-    eval_base = json.load(open(os.path.join(output_dir, "majority.json"), "r"))
+    if args.selector != "majority":
+        eval_base = json.load(open(os.path.join(output_dir, "majority.json"), "r"))
+    else:
+        eval_base = {}
     for qid in qid_info:
         if qid not in eval_dict and str(qid) not in eval_dict:
             try:

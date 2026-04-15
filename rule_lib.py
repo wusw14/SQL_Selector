@@ -2,20 +2,44 @@ from typing import List
 import numpy as np
 from sklearn.cluster import KMeans
 from sentence_transformers import SentenceTransformer
-from prompts import get_rule_integration_prompt2
+from prompts import (
+    get_rule_integration_prompt2,
+    get_rule_relevance_prompt,
+    get_rule_condition_prompt,
+)
 from llm_infer import llm_check
 from utils import parse_json
 import json
 import argparse
-from loader import load_all_preds
+from loader import load_all_preds, load_data
 from representation import Representation
 from sklearn.metrics import silhouette_score
+from collections import defaultdict
 
 
-general_rules = [
-    "The SQL must exactly reflect the intent of the natural language question.",
-    "Should avoid adding assumptions not present in the input (including NL query, schema, evidence(optional)).",
-    "When evidence defines metrics or calculations, SQL must prioritize and align with these definitions over general schema interpretation.",
+GENERAL_RULES = [
+    "Follow the instructions in the evidence, particularly regarding return values and metric calculations.",
+]
+
+SQL_KEYWORDS = [
+    "LIMIT",
+    "LIMIT 1",
+    "COUNT",
+    "AVG",
+    "MIN",
+    "MAX",
+    "SUM",
+    "DISTINCT",
+    "NULL",
+    "EXISTS",
+    "LIKE",
+    "CASE",
+    "PARTITION BY",
+    "ORDER BY",
+    "GROUP BY",
+    "CAST",
+    "RANK",
+    "ROW_NUMBER",
 ]
 
 
@@ -28,12 +52,29 @@ def parse_option():
 
 
 class Rule:
-    def __init__(self, text: str, mode: str, source_cases: List[int], source_reps):
+    def __init__(
+        self,
+        text: str,
+        mode: str,
+        source_cases: List[int],
+        source_reps,
+        nl_cond=None,
+        keywords=[],
+    ):
         self.text = text
         self.mode = mode
         self.source_cases = source_cases
         self.source_reps = source_reps
         self.rep = np.mean(source_reps, axis=0).tolist()
+        self.nl_cond = nl_cond
+        self.keywords = self.update_keywords(keywords)
+
+    def update_keywords(self, keywords):
+        filtered_keywords = []
+        for k in keywords:
+            if k.upper() in SQL_KEYWORDS:
+                filtered_keywords.append(k.upper())
+        return filtered_keywords
 
 
 class RuleCollection:
@@ -57,17 +98,46 @@ class RuleCollection:
         sim_score = np.dot(query_vector, np.array(self.reps).T)
         top_k_indices = np.argsort(sim_score)[::-1]
         top_k_rules = [self.texts[i] for i in top_k_indices[:top_k]]
-        return general_rules + top_k_rules
+        return GENERAL_RULES + top_k_rules
+
+    def retrieve_relevant(self, sqls: List[str], qid):
+        prompts, org_rules = [], []
+        for rule in self.rules:
+            if len(rule.source_cases) == 1 and rule.source_cases[0] == qid:
+                continue
+            related_cnt = 0
+            for sql in sqls:
+                for keyword in rule.keywords:
+                    if keyword in sql.upper():
+                        related_cnt += 1
+                        break
+            if related_cnt > 0.5 * len(sqls):
+                prompt = get_rule_relevance_prompt(rule.text, rule.nl_cond, sqls)
+                prompts.append(prompt)
+                org_rules.append(rule.text)
+        if len(prompts) == 0:
+            return GENERAL_RULES
+
+        responses = llm_check(prompts)
+        rules = []
+        for rule, response in zip(org_rules, responses):
+            if response == "Yes":
+                rules.append(rule)
+            print(f"[DEBUG][rule]: {rule}, relevance: {response}")
+        return GENERAL_RULES + rules
 
 
 def load_rule_collection(filename):
     data = json.load(open(filename, "r"))
     rules = []
     for item in data:
-        if len(item["source_cases"]) < 3:
-            continue
         rule_obj = Rule(
-            item["text"], item["mode"], item["source_cases"], item["source_reps"]
+            item["text"],
+            item["mode"],
+            item["source_cases"],
+            item["source_reps"],
+            item["nl_cond"],
+            item["keywords"],
         )
         rules.append(rule_obj)
     rule_collection = RuleCollection(rules)
@@ -79,7 +149,7 @@ def kmeans_by_optimizing_k(
 ) -> List[Rule]:
     # find the optimal k by optimizing the silhouette score
     upper_bound = min(len(reps) // 2, upper_bound)
-    lower_bound = max(len(reps) // 20, lower_bound)
+    lower_bound = max(len(reps) // 50, lower_bound)
     best_k = lower_bound
     best_score = -1
     for k in range(lower_bound, upper_bound, step):
@@ -123,46 +193,6 @@ def integrate_rule_by_llm(rules: List[Rule]) -> List[Rule]:
     return integrated_rules
 
 
-def merge_old(rules: List[Rule], emb_model) -> List[Rule]:
-    """
-    clustering by the reps; and summarize rules for each rep
-    """
-    reps = [rule.rep for rule in rules]
-    rule_labels = kmeans_by_optimizing_k(reps, lower_bound=5, upper_bound=50, step=1)
-    num_clusters = np.max(rule_labels) + 1
-    print(f"[DEBUG][num_clusters]: {num_clusters}")
-    integrated_rules = []
-    for cluster_label in range(num_clusters):
-        # deduplicate the rules in each cluster
-        cluster_rules = [
-            rules[i] for i in range(len(rules)) if rule_labels[i] == cluster_label
-        ]
-        if len(cluster_rules) <= 20:
-            sub_integrated_rules = integrate_rule_by_llm(cluster_rules)
-            integrated_rules.extend(sub_integrated_rules)
-        else:
-            # cluster the rules by the embeddings and then ask the LLM to integrate the rules in each cluster
-            rule_texts = [rule.text for rule in cluster_rules]
-            rule_embeddings = emb_model.encode(
-                rule_texts, batch_size=128, device="cuda"
-            )
-            rule_embeddings = rule_embeddings / np.linalg.norm(
-                rule_embeddings, axis=1, keepdims=True
-            )
-            emb_labels = kmeans_by_optimizing_k(
-                rule_embeddings, lower_bound=2, upper_bound=20, step=1
-            )
-            for sub_cluster_label in range(np.max(emb_labels) + 1):
-                sub_cluster_rules = [
-                    cluster_rules[i]
-                    for i in range(len(cluster_rules))
-                    if emb_labels[i] == sub_cluster_label
-                ]
-                sub_integrated_rules = integrate_rule_by_llm(sub_cluster_rules)
-                integrated_rules.extend(sub_integrated_rules)
-    return integrated_rules
-
-
 def merge(rules: List[Rule], emb_model) -> List[Rule]:
     """
     clustering by the embeddings; and summarize rules for each cluster
@@ -186,46 +216,104 @@ def merge(rules: List[Rule], emb_model) -> List[Rule]:
     return integrated_rules
 
 
-if __name__ == "__main__":
-    rule_file = "results/birddev/alphasql/iterative_rules/full_dev/t=4.json"
-    args = parse_option()
-    qid_preds, qid_sql_acc = load_all_preds(args)
-    results = json.load(open(rule_file, "r"))
-    qid_preds_with_rules = {}
-    for qid, result in results.items():
-        rules = result["rules"]
-        if len(rules) == 0:
-            continue
-        qid_preds_with_rules[int(qid)] = qid_preds[int(qid)]
-    representation_model = Representation(qid_preds_with_rules)
-    query_vectors = representation_model.query_vectors
-    rule_objs = []
-    for qid, result in results.items():
-        rules = result["rules"]
-        if len(rules) == 0:
-            continue
-        for rule in rules[-1]:
-            rep = query_vectors[int(qid)]
-            rep = list(rep)
-            rule_obj = Rule(rule, "generated", [int(qid)], [rep])
-            rule_objs.append(rule_obj)
-    #         print(rep, type(rep))
-    # exit()
-    print(f"len(rule_objs): {len(rule_objs)}")
+def gen_hint_condition(rule: Rule, query: str, evidence: str, sqls: List[str]) -> Rule:
+    rule_cond_prompt = get_rule_condition_prompt(rule.text, query, evidence, sqls)
+    print(f"{rule_cond_prompt}\n\n")
+    rule_cond_response = llm_check([rule_cond_prompt], llm="deepseek")[0]
+    rule_cond_response = parse_json(rule_cond_response)
+    rule.nl_cond = rule_cond_response["nl_condition"]
+    rule.keywords = rule_cond_response["sql_keywords"]
+    return rule
 
-    rule_objs = merge(rule_objs, representation_model.emb_model)
-    rule_collection = RuleCollection(rule_objs)
-    # save the merged rules to the file
-    rules = []
-    for rule_obj in rule_objs:
-        rules.append(
-            {
-                "text": rule_obj.text,
-                "mode": rule_obj.mode,
-                "source_cases": rule_obj.source_cases,
-                "source_reps": rule_obj.source_reps,
-            }
-        )
-    output_file = "results/birddev/alphasql/iterative_rules/full_dev/merged_rules.json"
-    with open(output_file, "w") as f:
-        json.dump(rules, f, indent=2)
+
+# if __name__ == "__main__":
+#     database = "full_dev"
+#     rule_file = f"results/birddev/alphasql/iterative_rules/{database}/post_process.json"
+#     args = parse_option()
+#     qid_preds, qid_sql_acc = load_all_preds(args)
+#     qid_info = load_data(args.dataset_name)
+#     """
+#     results = json.load(open(rule_file, "r"))
+#     qid_preds_with_rules = {}
+#     qid_rules = defaultdict(list)
+#     for qid, result in results.items():
+#         if len(result["rules"]) == 0:
+#             continue
+#         rule_scores = result["rule_scores"]
+#         for rule, score_dict in rule_scores.items():
+#             pos_scores = score_dict["pos_scores"]
+#             neg_scores = score_dict["neg_scores"]
+#             pos_avg = np.mean(pos_scores)
+#             neg_avg = np.mean(neg_scores)
+#             if (
+#                 score_dict["generality"] == 1
+#                 and score_dict["clarity"] == 1
+#                 and pos_avg > 0.9
+#                 and pos_avg > neg_avg
+#             ):
+#                 qid_preds_with_rules[int(qid)] = qid_preds[int(qid)]
+#                 qid_rules[int(qid)].append(rule)
+#     representation_model = Representation(qid_preds_with_rules)
+#     query_vectors = representation_model.query_vectors
+#     rule_objs = []
+#     for qid, rules in qid_rules.items():
+#         for rule in rules:
+#             rep = query_vectors[int(qid)]
+#             rep = list(rep)
+#             rule_obj = Rule(rule, "generated", [int(qid)], [rep])
+#             rule_objs.append(rule_obj)
+#     for t in range(2):
+#         print(f"len(rule_objs): {len(rule_objs)}")
+#         org_size = len(rule_objs)
+#         rule_objs = merge(rule_objs, representation_model.emb_model)
+#         new_size = len(rule_objs)
+#         print(f"org_size: {org_size}, new_size: {new_size}")
+#         rule_collection = RuleCollection(rule_objs)
+#         # save the merged rules to the file
+#         rules = []
+#         for rule_obj in rule_objs:
+#             rules.append(
+#                 {
+#                     "text": rule_obj.text,
+#                     "mode": rule_obj.mode,
+#                     "source_cases": rule_obj.source_cases,
+#                     "source_reps": rule_obj.source_reps,
+#                 }
+#             )
+#         output_file = f"results/birddev/alphasql/iterative_rules/{database}/merged_rules{t+1}.json"
+#         with open(output_file, "w") as f:
+#             json.dump(rules, f, indent=2)
+#         if org_size - new_size <= 10:
+#             print(f"Stop at t={t+1}")
+#             break
+#     """
+#     rule_file = (
+#         f"results/birddev/alphasql/iterative_rules/{database}/merged_rules1.json"
+#     )
+#     rule_collection = load_rule_collection(rule_file)
+#     rule_with_cond = []
+#     for rule in rule_collection.rules:
+#         info = qid_info[rule.source_cases[0]]
+#         query = info["question"]
+#         evidence = info["evidence"]
+#         sqls = qid_preds[rule.source_cases[0]][:5]
+#         rule_obj = gen_hint_condition(rule, query, evidence, sqls)
+#         print(f"rule: {rule.text}")
+#         print(f"nl_cond: {rule.nl_cond}")
+#         print(f"keywords: {rule.keywords}")
+#         print("-" * 100 + "\n" * 5)
+#         rule_with_cond.append(
+#             {
+#                 "text": rule_obj.text,
+#                 "nl_cond": rule_obj.nl_cond,
+#                 "keywords": rule_obj.keywords,
+#                 "mode": rule_obj.mode,
+#                 "source_cases": rule_obj.source_cases,
+#                 "source_reps": rule_obj.source_reps,
+#             }
+#         )
+#     output_file = (
+#         f"results/birddev/alphasql/iterative_rules/{database}/rule_with_cond.json"
+#     )
+#     with open(output_file, "w") as f:
+#         json.dump(rule_with_cond, f, indent=2)

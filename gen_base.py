@@ -38,6 +38,10 @@ def generate_response(prompt):
         temperature=0.8,
         logprobs=True,
         top_logprobs=2,
+        extra_body={
+            "top_k": 20,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
     response_text = response.choices[0].message.content
     # print("[DEBUG] logprobs:", response.choices[0].logprobs)
@@ -76,6 +80,19 @@ if __name__ == "__main__":
     output_dir = f"results/{verifier}/{dataset_name}"
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{method_name}_{model_name}_probs.json")
+    eval_dir = f"eval_results/{dataset_name}/{method_name}/{model_name}"
+    qid_sql_acc_file = (
+        f"eval_results/{dataset_name}/{method_name}/{model_name}/gp_sql_acc.json"
+    )
+    qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
+
+    eval_base = json.load(open(os.path.join(eval_dir, "exec.json"), "r"))
+    qid_to_be_checked = []
+    for qid, res in eval_base.items():
+        if res["upper_acc"] == 0 or res["lower_acc"] == 1:
+            continue
+        qid_to_be_checked.append(int(qid))
+    print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
 
     if os.path.exists(output_file):
         qid_sqls_probs = json.load(open(output_file, "r"))
@@ -83,6 +100,8 @@ if __name__ == "__main__":
         qid_sqls_probs = {}
     for qid, preds in qid_preds.items():
         if qid in qid_sqls_probs or str(qid) in qid_sqls_probs:
+            continue
+        if qid not in qid_to_be_checked:
             continue
         start_time = time.time()
         info = qid_info[qid]
@@ -98,12 +117,28 @@ if __name__ == "__main__":
             probs = llm_check(prompts)
             probs = np.array(probs).reshape(len(preds), N)
             probs = np.round(np.mean(probs, axis=1), 5).tolist()
-            if len(qid_sqls_probs) == 0:
-                print(prompts[0])
+            # if len(qid_sqls_probs) == 0:
+            #     print(prompts[0])
         else:
             probs = []
+        if len(probs) == 0:
+            selected_sql = "None"
+            selected_acc = 0
+        else:
+            selected_sql = preds[np.argmax(probs)]
+            gp_acc_list = qid_sql_acc[str(qid)]
+            sql_acc_dict = {}
+            for sql_acc in gp_acc_list:
+                sqls = sql_acc["sqls"]
+                acc = sql_acc["acc1"]
+                for sql in sqls:
+                    sql_acc_dict[sql] = acc
+            selected_acc = sql_acc_dict.get(selected_sql, 0)
+
         qid_sqls_probs[qid] = {
             "gt_sql": gt_sql,
+            "selected_sql": selected_sql,
+            "selected_acc": selected_acc,
             "sqls": preds,
             "probs": probs,
             "time_cost": time.time() - start_time,

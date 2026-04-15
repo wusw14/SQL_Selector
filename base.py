@@ -32,6 +32,7 @@ if __name__ == "__main__":
     eval_dir = f"eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}"
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "exec.json")
+    print(output_file)
     if os.path.exists(output_file):
         with open(output_file, "r") as f:
             results = json.load(f)
@@ -71,7 +72,7 @@ if __name__ == "__main__":
             # print("\n" * 5)
         else:
             db = db_memory.get(db_name)
-        sql_collection = SQLCollection(preds, db)
+        sql_collection = SQLCollection(preds, db, info)
         # if all the sqls have the same execution results, skip the selection
         exec_res_set = set()
         for sql, exec_res in sql_collection.exe_results.items():

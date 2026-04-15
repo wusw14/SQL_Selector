@@ -344,6 +344,10 @@ def inter_group_selection(
             # if not if_same_schema:
             #     router_type = "other"
             #     router = compare_other
+            if frozenset(sql_node1.exec_res) == frozenset(sql_node2.exec_res):
+                sql_node_votes[sql_node1] += 0.5
+                sql_node_votes[sql_node2] += 0.5
+                continue
             cover_flag = False
             if len(sql_node1.exec_res[0]) > len(sql_node2.exec_res[0]):
                 cover_flag = if_align_exec_res_with_gt(

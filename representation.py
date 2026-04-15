@@ -14,15 +14,13 @@ general_rules = [
 ]
 
 keywords = [
-    "JOIN",
     "LIMIT",
+    "LIMIT 1",
     "COUNT",
     "AVG",
     "MIN",
     "MAX",
     "SUM",
-    "DESC",
-    "ASC",
     "DISTINCT",
     "NULL",
     "EXISTS",

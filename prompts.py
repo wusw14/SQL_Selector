@@ -90,7 +90,7 @@ These notes led to an incorrect judgment, likely because they missed the core se
     if len(historical_rules) > 0:
         prompt += f"**Historical Hints(Insufficient)**\n{historical_rules}\nExisting hints failed to resolve this case; your hint must address the gap."
 
-    prompt += "\nNow, analyze the fundamental reason SQL1 is correct while SQL2 is incorrect. Derive a general hint that would have prevented the earlier misjudgment. Output only the hint—no explanation, no preamble. Use clear, imperative language in a single sentence.."
+    prompt += "\nNow, analyze the fundamental reason SQL1 is correct while SQL2 is incorrect. Derive a general hint that would have prevented the earlier misjudgment. Output only the hint—no explanation, no preamble. Use clear, imperative language in a single sentence."
     return prompt
 
 
@@ -106,19 +106,19 @@ Output only the integrated hints, separated by " | ", with no additional text or
 
 
 def get_rule_integration_prompt2(rules: List[str]) -> str:
-    rules = "\n".join(f"Rule {i+1}: {rule}" for i, rule in enumerate(rules))
-    prompt = f"""You are an expert in SQL semantics. Given a list of high-level rules for evaluating which of two SQL queries better aligns with a user’s intent, consolidate them into a clear, concise, and informative set of evaluation rules that capture all essential criteria—merging duplicates and removing redundancies without introducing any new rules. 
+    rules = "\n".join(f"Hint {i+1}: {rule}" for i, rule in enumerate(rules))
+    prompt = f"""You are an expert in SQL semantics. Given a list of hints related to evaluating which of two SQL queries aligns better with a user’s intent, your task is to remove duplicates without introducing any new information, or combining distinct content.
 
-Your output must be a JSON dictionary where:
-- Each key is a comma-separated string of the original rule indices that were combined (e.g., "1,2,4").
-- Each value is the resulting integrated rule, expressed clearly and concisely in a if-then statement.
+Your output must be a JSON dictionary organized as follows:
+1. Each key is a comma-separated string of the original hint indices that were duplicates (e.g., "1,3").
+2. Each value is the resulting hint, written clearly and without ambiguity.
 
-Rules:
+Hints:
 {rules}
 
 Output format:
 {{
-    "rule_indices": "integrated_rule"
+    "hint_indices": "integrated_hint"
 }}
 """
     return prompt
@@ -151,7 +151,7 @@ def get_rule_evaluation_prompt(
 
 Output Format:
 {{
-    "reason": "Briefly explain your reasoning process.",
+    "reason": "Briefly explain your reasoning process within 50 words.",
     "relevance": "Yes/No/Unsure",
     "violation": "Yes/No/Unsure"
 }}
@@ -168,7 +168,7 @@ def get_simple_comparison_prompt(
 
 Output Format:
 {{
-    "reason": "Explain specifically which SQL better aligns with the intent of the NL Query by focusing on their core differences.",
+    "reason": "Briefly explain your reasoning process within 200 words.",
     "better_sql": "SQL1/SQL2/Unsure",
 }}
 """
@@ -243,5 +243,53 @@ Your output must be a JSON dictionary with the following structure:
 
 **SQL Hint to Evaluate:**
 {rule}
+"""
+    return prompt
+
+
+def get_rule_relevance_prompt(rule: str, cond: str, sqls: List[str]) -> str:
+    sqls = "\n".join(f"SQL {i+1}: {sql}" for i, sql in enumerate(sqls))
+    prompt = f"""You are an expert SQL assistant. Your task is to determine whether any SQL statement in a given set satisfies a specified condition.
+
+### Instructions:
+1. Carefully read and understand the condition.
+2. Review each SQL statement in the given set.
+3. Determine whether any SQL statement satisfies the condition.
+
+**Condition:**
+{cond}
+
+**SQL Set:**
+{sqls}
+
+Directly give your response as "Yes", "Unsure", or "No" without any other text.
+"""
+    return prompt
+
+
+def get_rule_condition_prompt(
+    rule: str, query: str, evidence: str, sqls: List[str]
+) -> str:
+    prompt = f"""You are an expert SQL semantic analyst. Your task is to analyze a given SQL hint and generate a trigger condition in a JSON format. This trigger condition will consist of two parts: a natural language description and a list of relevant SQL keywords.
+
+### Input Hint:
+{rule}
+
+For reference, here is the information of the case where the hint is obtained:
+NL query: {query}
+Evidenc: {evidence}
+SQLs: {sqls}
+
+### Instructions:
+1. **NL Condition**: Create a concise and clear natural language phrase (maximum 20 words) that accurately describes the scenario where this hint is applicable.
+2. **SQL Keywords**: List the minimal set of SQL keywords, clauses (e.g., NULL, COUNT, DISTINCT, LIMIT, RANK, ORDER BY, GROUP BY, HAVING, etc.) that, when present alone or together, strongly suggest the hint applies. 
+
+### Output Format:
+Return ONLY a valid JSON dictionary with the following structure. Do not include any explanation or markdown formatting.
+
+{{
+  "nl_condition": "<short, clear condition, ≤20 words>",
+  "sql_keywords": ["keyword1", ..., "keywordn"]
+}}
 """
     return prompt
