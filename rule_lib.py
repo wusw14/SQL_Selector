@@ -132,7 +132,9 @@ class RuleCollection:
             if score == len(sqls) or (
                 score > 0 and (len(org_rules) < 20 or keyword_uncovred_cnt > 0)
             ):
-                prompt = get_rule_relevance_prompt(question, rule.nl_cond, sqls)
+                prompt = get_rule_relevance_prompt(
+                    question, rule.nl_cond, rule.text, sqls
+                )
                 prompts.append(prompt)
                 org_rules.append(rule.text)
                 keywords_set.update(set(rule_hitted_keywords[rule]))
@@ -142,8 +144,10 @@ class RuleCollection:
         responses = llm_check(prompts)
         rules = []
         for rule, response in zip(org_rules, responses):
-            if response == "Yes":
-                rules.append(rule)
+            if "reason" in response:
+                index = response.rindex("reason")
+                if "Yes" in response[index:]:
+                    rules.append(rule)
             # print(f"[DEBUG][rule]: {rule}, relevance: {response}")
         print(f"[Rule Size]: {len(org_rules)} -> {len(rules)}")
         return GENERAL_RULES + rules

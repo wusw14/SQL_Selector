@@ -124,41 +124,6 @@ Output format:
     return prompt
 
 
-def get_rule_evaluation_prompt_old(
-    question: str,
-    evidence: str,
-    schema_note: str,
-    sql_node: SQLNode,
-    rule: str,
-) -> str:
-    base_info = f"""**Schema**
-{schema_note}
-    
-**NL Query**
-{question}
-"""
-    if evidence is not None and len(evidence.strip()) > 0:
-        base_info += f"**Evidence**\n{evidence}\n"
-    prompt = f"""You are an expert in SQL and natural language understanding. Given a natural language query, database schema, optional evidence, and a SQL statement, your task is to determine (1) Relevance: Whether the provided hint is relevant to the SQL statement. (2) Violation: Whether the SQL statement violates the provided hint.
-
-{base_info}
-
-**SQL**
-{sql_node.org_sql}
-
-**Hint**
-{rule}
-
-Output Format:
-{{
-    "reason": "Briefly explain your reasoning process within 50 words.",
-    "relevance": "Yes/No/Unsure",
-    "violation": "Yes/No/Unsure"
-}}
-"""
-    return prompt
-
-
 def get_rule_evaluation_prompt(
     question: str,
     evidence: str,
@@ -193,7 +158,7 @@ Please follow these steps to make your decision:
 
 Output Format:
 {{
-    "reason": "Briefly explain how the SQL components either align with or conflict with the Hint. Keep it concise (under 50 words).",
+    "reason": "Briefly explain how the SQL components either align with or conflict with the Hint. Keep it concise (under 50 tokens).",
     "violation": "Yes/No/Unsure"
 }}
 """
@@ -209,7 +174,7 @@ def get_simple_comparison_prompt(
 
 Output Format:
 {{
-    "reason": "Briefly explain your reasoning process within 200 words.",
+    "reason": "Briefly explain your reasoning process (under 150 tokens).",
     "better_sql": "SQL1/SQL2/Unsure",
 }}
 """
@@ -220,8 +185,8 @@ def get_comparison_prompt(
     base_info: str,
     rules: List[str],
 ) -> str:
-    rules = "\n".join(f"Rule {i+1}: {rule}" for i, rule in enumerate(rules))
-    prompt = f"""You are an expert in SQL semantics and query intent analysis. Given a natural language (NL) query, database schema, optional evidence, and two SQL statements that yield different execution results, your task is to determine which SQL is more likely to produce the correct execution result for the NL query.
+    rules = "\n".join(f"Hint {i+1}: {rule}" for i, rule in enumerate(rules))
+    prompt = f"""You are an expert in SQL semantics and query intent analysis. Given a natural language (NL) query, database schema, optional evidence, and two SQL statements that yield different execution results, your task is to analyze and determine which SQL better aligns with the intent of the NL Query by focusing on their core logical differences. Ensure your explanation is logically consistent. Reference hints only when they meaningfully inform the decision (e.g., 'Hint 3 applies because...').
 
 **Hints for Evaluation:**
 The following hints are provided as reference heuristics to support your analysis. They reflect common pitfalls and best practices but are not absolute constraints. 
@@ -231,7 +196,7 @@ The following hints are provided as reference heuristics to support your analysi
 
 Output strictly in the following JSON format with no extra text:
 {{
-    "reason": "Briefly explain your reasoning process within 200 words. Ensure your explanation is logically consistent. Reference hints only when they meaningfully inform the decision (e.g., 'Hint 3 applies because...').",
+    "reason": "Briefly explain your reasoning process (under 150 tokens).",
     "better_sql": "SQL1/SQL2/Unsure"
 }}
 """
@@ -288,15 +253,11 @@ Your output must be a JSON dictionary with the following structure:
     return prompt
 
 
-def get_rule_relevance_prompt(question: str, cond: str, sqls: List[str]) -> str:
+def get_rule_relevance_prompt(
+    question: str, cond: str, hint: str, sqls: List[str]
+) -> str:
     sqls = "\n".join(f"SQL {i+1}: {sql}" for i, sql in enumerate(sqls))
     prompt = f"""You are an expert SQL assistant. Your task is to determine whether a specific condition (a hint trigger) applies to a given NL query. You will make this determination based on the user's original natural language intent and the resulting SQL statements.
-
-### Instructions:
-1. Analyze the **NL Query** to understand the user's core intent and business logic.
-2. Review the **SQL Set** to understand how that intent was translated into database operations.
-3. Read the **Condition** carefully.
-4. Determine whether the scenario described by the NL Query and executed by the SQL Set satisfies the condition. 
 
 **NL Query:**
 {question}
@@ -304,10 +265,27 @@ def get_rule_relevance_prompt(question: str, cond: str, sqls: List[str]) -> str:
 **SQL Set:**
 {sqls}
 
-**Condition:**
-{cond}
+**Hint Condition:**
+{cond} 
 
-Directly give your response as "Yes", "Unsure", or "No" without any other text.
+**Hint Content:**
+{hint}
+
+Analysis Protocol:
+1. Direct Mapping: Does the SQL explicitly implement a logic that matches the hint's trigger conditon?
+2. Logical Necessity: Would the SQL be incorrect if this hint were ignored?
+
+Instructions:
+Evaluate if the Condition is a critical requirement for the given NL Query and SQL Set.
+1. Answer "Yes" only if the condition is explicitly triggered by the query logic AND the SQL implementation.
+2. Answer "No" if the condition is merely tangentially related, redundant, or if the SQL does not strictly require this specific hint to be valid.
+3. If the relationship is ambiguous or the SQL only partially meets the criteria, answer "Unsure".
+
+Output Format:
+{{
+    "reason": "Briefly explain your reasoning process (under 25 tokens).",
+    "relevance": "Yes/No/Unsure"
+}}
 """
     return prompt
 

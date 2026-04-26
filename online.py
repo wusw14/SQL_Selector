@@ -125,7 +125,6 @@ if __name__ == "__main__":
             acc = sql_acc["acc1"]
             for sql in sqls:
                 sql_acc_dict[sql] = acc
-        start_time = time.time()
         if db_name not in db_memory.memory:
             db = Database(args.dataset_name, db_name)
             db_memory.add(db_name, db)
@@ -139,6 +138,7 @@ if __name__ == "__main__":
             print("\n" * 5)
         else:
             db = db_memory.get(db_name)
+        start_time = time.time()
         sql_collection = SQLCollection(preds, db, info)
         # if all the sqls have the same execution results, skip the selection
         exec_res_set = set()
@@ -195,10 +195,13 @@ if __name__ == "__main__":
             results[str(qid)] = result
             continue
 
+        syntax_time = time.time() - start_time
+
         print("=====Rule-based Selection=====")
         sqls = [sql_node.org_sql for sql_node in sql_nodes]
         rules = rule_collection.retrieve_relevant(sqls, qid, question)
         print(rules)
+        rule_retrieval_time = time.time() - start_time - syntax_time
         sql_node_votes = rule_based_selection(
             sql_collection, sql_nodes, question, evidence, rules
         )
@@ -220,6 +223,7 @@ if __name__ == "__main__":
                         flag = True
                         break
         print(f"[DEBUG] Filtered SQL Nodes: {len(filtered_sql_nodes)}")
+        rule_score_time = time.time() - start_time - syntax_time - rule_retrieval_time
 
         print("=====Pairwise Selection=====")
         # TODO: for those achieves the highest score in rule-based selection
@@ -233,6 +237,13 @@ if __name__ == "__main__":
             args.rule_mode,
         )
         print(f"[DEBUG] SQL Node Votes: {filtered_sql_node_votes}")
+        pairwise_time = (
+            time.time()
+            - start_time
+            - syntax_time
+            - rule_retrieval_time
+            - rule_score_time
+        )
 
         print("=====Final Selection=====")
         for sql_node, vote in filtered_sql_node_votes.items():
@@ -275,11 +286,17 @@ if __name__ == "__main__":
         result["selected_sql"] = selected_sql
         result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
         result["time_cost"] = time.time() - start_time
+        result["syntax_time"] = syntax_time
+        result["rule_retrieval_time"] = rule_retrieval_time
+        result["rule_score_time"] = rule_score_time
+        result["pairwise_time"] = pairwise_time
         result["rules"] = rules
         result["comparison_notes"] = comparison_notes
         result["sql_logs"] = sql_logs
         results[str(qid)] = result
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
+        if len(results) >= 10:
+            exit()
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)

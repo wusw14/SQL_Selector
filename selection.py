@@ -948,6 +948,7 @@ def rule_based_selection(
         score = 0
         for j, rule in enumerate(rules):
             response = responses[i * len(rules) + j]
+            print(response)
             answer = parse_json(response)
             if type(answer) != dict or "violation" not in answer:
                 score += 0.5
