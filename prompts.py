@@ -124,7 +124,7 @@ Output format:
     return prompt
 
 
-def get_rule_evaluation_prompt(
+def get_rule_evaluation_prompt_old(
     question: str,
     evidence: str,
     schema_note: str,
@@ -159,6 +159,47 @@ Output Format:
     return prompt
 
 
+def get_rule_evaluation_prompt(
+    question: str,
+    evidence: str,
+    schema_note: str,
+    sql_node: SQLNode,
+    rule: str,
+) -> str:
+    base_info = f"""**Schema**
+{schema_note}
+    
+**NL Query**
+{question}
+"""
+    if evidence is not None and len(evidence.strip()) > 0:
+        base_info += f"**Evidence**\n{evidence}\n"
+    prompt = f"""YYou are an expert in SQL and natural language understanding. Your task is to evaluate a given SQL statement against a specific constraint (Hint) and determine if the SQL violates that constraint.
+
+### Instructions:
+Please follow these steps to make your decision:
+1. Context Analysis: Review the natural language query and database schema in the base information to understand the intended semantics of the query.
+2. SQL Parsing: Analyze the structural components of the provided SQL statement (e.g., JOINs, aggregations, subqueries, conditions).
+3. Hint Interpretation: Carefully read and understand the Hint.
+4. Violation Check: Check if the SQL statement explicitly conflicts with or fails to satisfy the requirement defined in the Hint.    
+
+{base_info}
+
+**SQL**
+{sql_node.org_sql}
+
+**Hint**
+{rule}
+
+Output Format:
+{{
+    "reason": "Briefly explain how the SQL components either align with or conflict with the Hint. Keep it concise (under 50 words).",
+    "violation": "Yes/No/Unsure"
+}}
+"""
+    return prompt
+
+
 def get_simple_comparison_prompt(
     base_info: str,
 ) -> str:
@@ -182,15 +223,15 @@ def get_comparison_prompt(
     rules = "\n".join(f"Rule {i+1}: {rule}" for i, rule in enumerate(rules))
     prompt = f"""You are an expert in SQL semantics and query intent analysis. Given a natural language (NL) query, database schema, optional evidence, and two SQL statements that yield different execution results, your task is to determine which SQL is more likely to produce the correct execution result for the NL query.
 
-**Rules for Evaluation:**
-The following rules are provided as reference heuristics to support your analysis. They reflect common pitfalls and best practices but are not absolute constraints. 
+**Hints for Evaluation:**
+The following hints are provided as reference heuristics to support your analysis. They reflect common pitfalls and best practices but are not absolute constraints. 
 {rules}
 
 {base_info}
 
 Output strictly in the following JSON format with no extra text:
 {{
-    "reason": "Briefly explain your reasoning process. Ensure your explanation is logically consistent. Reference rules only when they meaningfully inform the decision (e.g., 'Rule 3 applies because...').",
+    "reason": "Briefly explain your reasoning process within 200 words. Ensure your explanation is logically consistent. Reference hints only when they meaningfully inform the decision (e.g., 'Hint 3 applies because...').",
     "better_sql": "SQL1/SQL2/Unsure"
 }}
 """
@@ -247,20 +288,24 @@ Your output must be a JSON dictionary with the following structure:
     return prompt
 
 
-def get_rule_relevance_prompt(rule: str, cond: str, sqls: List[str]) -> str:
+def get_rule_relevance_prompt(question: str, cond: str, sqls: List[str]) -> str:
     sqls = "\n".join(f"SQL {i+1}: {sql}" for i, sql in enumerate(sqls))
-    prompt = f"""You are an expert SQL assistant. Your task is to determine whether any SQL statement in a given set satisfies a specified condition.
+    prompt = f"""You are an expert SQL assistant. Your task is to determine whether a specific condition (a hint trigger) applies to a given NL query. You will make this determination based on the user's original natural language intent and the resulting SQL statements.
 
 ### Instructions:
-1. Carefully read and understand the condition.
-2. Review each SQL statement in the given set.
-3. Determine whether any SQL statement satisfies the condition.
+1. Analyze the **NL Query** to understand the user's core intent and business logic.
+2. Review the **SQL Set** to understand how that intent was translated into database operations.
+3. Read the **Condition** carefully.
+4. Determine whether the scenario described by the NL Query and executed by the SQL Set satisfies the condition. 
 
-**Condition:**
-{cond}
+**NL Query:**
+{question}
 
 **SQL Set:**
 {sqls}
+
+**Condition:**
+{cond}
 
 Directly give your response as "Yes", "Unsure", or "No" without any other text.
 """

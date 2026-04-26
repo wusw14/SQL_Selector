@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 import numpy as np
 from sklearn.cluster import KMeans
 from sentence_transformers import SentenceTransformer
@@ -78,11 +78,15 @@ class Rule:
 
 
 class RuleCollection:
-    def __init__(self, rules: List[Rule]):
+    def __init__(self, rules: List[Rule], qid_db: Dict[int, str]):
         self.rules = rules
         self.reps = [rule.rep for rule in rules]
         self.texts = [rule.text for rule in rules]
         self.qids = self.get_qids()
+        self.qid_db = qid_db
+        self.db_qids = defaultdict(list)
+        for qid, db in qid_db.items():
+            self.db_qids[db].append(qid)
 
     def get_qids(self):
         qids = []
@@ -100,21 +104,38 @@ class RuleCollection:
         top_k_rules = [self.texts[i] for i in top_k_indices[:top_k]]
         return GENERAL_RULES + top_k_rules
 
-    def retrieve_relevant(self, sqls: List[str], qid):
+    def retrieve_relevant(self, sqls: List[str], qid, question):
         prompts, org_rules = [], []
+        rule_score = {}
+        rule_hitted_keywords = {}
         for rule in self.rules:
-            if len(rule.source_cases) == 1 and rule.source_cases[0] == qid:
+            same_db_qids = self.db_qids[self.qid_db[qid]]
+            diff_db_qids = list(set(rule.source_cases) - set(same_db_qids))
+            if len(diff_db_qids) == 0:
                 continue
             related_cnt = 0
+            hitted_keywords = set()
             for sql in sqls:
+                flag = False
                 for keyword in rule.keywords:
                     if keyword in sql.upper():
-                        related_cnt += 1
-                        break
-            if related_cnt > 0.5 * len(sqls):
-                prompt = get_rule_relevance_prompt(rule.text, rule.nl_cond, sqls)
+                        hitted_keywords.add(keyword)
+                        flag = True
+                related_cnt += int(flag)
+            rule_score[rule] = related_cnt
+            rule_hitted_keywords[rule] = hitted_keywords
+        # sort the rules by the score
+        rule_score = sorted(rule_score.items(), key=lambda x: x[1], reverse=True)
+        keywords_set = set()
+        for rule, score in rule_score:
+            keyword_uncovred_cnt = len(set(rule_hitted_keywords[rule]) - keywords_set)
+            if score == len(sqls) or (
+                score > 0 and (len(org_rules) < 20 or keyword_uncovred_cnt > 0)
+            ):
+                prompt = get_rule_relevance_prompt(question, rule.nl_cond, sqls)
                 prompts.append(prompt)
                 org_rules.append(rule.text)
+                keywords_set.update(set(rule_hitted_keywords[rule]))
         if len(prompts) == 0:
             return GENERAL_RULES
 
@@ -123,11 +144,12 @@ class RuleCollection:
         for rule, response in zip(org_rules, responses):
             if response == "Yes":
                 rules.append(rule)
-            print(f"[DEBUG][rule]: {rule}, relevance: {response}")
+            # print(f"[DEBUG][rule]: {rule}, relevance: {response}")
+        print(f"[Rule Size]: {len(org_rules)} -> {len(rules)}")
         return GENERAL_RULES + rules
 
 
-def load_rule_collection(filename):
+def load_rule_collection(filename, qid_db):
     data = json.load(open(filename, "r"))
     rules = []
     for item in data:
@@ -140,7 +162,7 @@ def load_rule_collection(filename):
             item["keywords"],
         )
         rules.append(rule_obj)
-    rule_collection = RuleCollection(rules)
+    rule_collection = RuleCollection(rules, qid_db)
     return rule_collection
 
 
@@ -287,33 +309,37 @@ def gen_hint_condition(rule: Rule, query: str, evidence: str, sqls: List[str]) -
 #             print(f"Stop at t={t+1}")
 #             break
 #     """
-#     rule_file = (
-#         f"results/birddev/alphasql/iterative_rules/{database}/merged_rules1.json"
+# rule_file = (
+#     f"results/birddev/alphasql/iterative_rules/{database}/low_quality_rules.json"
+# )
+# low_quality_rules = json.load(open(rule_file, "r"))
+# rules = []
+# for rule_text, qid in low_quality_rules.items():
+#     rule_obj = Rule(rule_text, "low_quality", [int(qid)], [])
+#     rules.append(rule_obj)
+# rule_collection = RuleCollection(rules, {})
+# # rule_collection = load_rule_collection(rule_file)
+# rule_with_cond = []
+# for rule in rule_collection.rules:
+#     info = qid_info[rule.source_cases[0]]
+#     query = info["question"]
+#     evidence = info["evidence"]
+#     sqls = qid_preds[rule.source_cases[0]][:5]
+#     rule_obj = gen_hint_condition(rule, query, evidence, sqls)
+#     print(f"rule: {rule.text}")
+#     print(f"nl_cond: {rule.nl_cond}")
+#     print(f"keywords: {rule.keywords}")
+#     print("-" * 100 + "\n" * 5)
+#     rule_with_cond.append(
+#         {
+#             "text": rule_obj.text,
+#             "nl_cond": rule_obj.nl_cond,
+#             "keywords": rule_obj.keywords,
+#             "mode": rule_obj.mode,
+#             "source_cases": rule_obj.source_cases,
+#             "source_reps": rule_obj.source_reps,
+#         }
 #     )
-#     rule_collection = load_rule_collection(rule_file)
-#     rule_with_cond = []
-#     for rule in rule_collection.rules:
-#         info = qid_info[rule.source_cases[0]]
-#         query = info["question"]
-#         evidence = info["evidence"]
-#         sqls = qid_preds[rule.source_cases[0]][:5]
-#         rule_obj = gen_hint_condition(rule, query, evidence, sqls)
-#         print(f"rule: {rule.text}")
-#         print(f"nl_cond: {rule.nl_cond}")
-#         print(f"keywords: {rule.keywords}")
-#         print("-" * 100 + "\n" * 5)
-#         rule_with_cond.append(
-#             {
-#                 "text": rule_obj.text,
-#                 "nl_cond": rule_obj.nl_cond,
-#                 "keywords": rule_obj.keywords,
-#                 "mode": rule_obj.mode,
-#                 "source_cases": rule_obj.source_cases,
-#                 "source_reps": rule_obj.source_reps,
-#             }
-#         )
-#     output_file = (
-#         f"results/birddev/alphasql/iterative_rules/{database}/rule_with_cond.json"
-#     )
+#     output_file = f"results/birddev/alphasql/iterative_rules/{database}/low_quality_rule_with_cond.json"
 #     with open(output_file, "w") as f:
 #         json.dump(rule_with_cond, f, indent=2)

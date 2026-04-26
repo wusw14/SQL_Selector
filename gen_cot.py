@@ -7,7 +7,9 @@ import json
 import os
 import time
 from dotenv import load_dotenv
-import re
+from parser import SQLCollection
+from memory import Memory
+from database import Database
 
 load_dotenv(override=True)
 
@@ -20,9 +22,13 @@ client = OpenAI(
 N = 3
 
 
-def format_prompt(question, evidence, pred_sql):
+def format_prompt(question, evidence, schema, pred_sql):
     # COT prompt
     prompt = f"""You are a SQL and natural language semantic analysis expert. Given a natural language query (NL query), related supplementary information (evidence), and a generated SQL query, analyze whether the generated SQL query is correct.
+
+Schema:
+{schema}
+
 Query: {question}
 Evidence: {evidence}
 Generated SQL: {pred_sql}
@@ -56,23 +62,10 @@ def generate_response(prompt):
     # Get logprobs for all generated tokens
     logprobs_content = response.choices[0].logprobs.content
 
-    # Parse JSON response
-    try:
-        start_idx = response_text.find("{")
-        end_idx = response_text.rfind("}") + 1
-        response_text = response_text[start_idx:end_idx]
-        response_json = json.loads(response_text)
-        correctness = response_json["correctness"]
-        think = response_json["think"]
-    except:
-        print(response_text)
-        correctness = "No"
-        think = ""
-
     # Get probability for the Yes/No token
     prob_normalized = get_normalized_probability(logprobs_content)
 
-    return {"correctness": correctness, "prob": prob_normalized, "think": think}
+    return prob_normalized
 
 
 # If you want normalized probability (relative probability between Yes and No):
@@ -116,11 +109,8 @@ def llm_check(prompts):
     # parallel generation
     with ThreadPoolExecutor(max_workers=len(prompts)) as executor:
         futures = [executor.submit(generate_response, prompt) for prompt in prompts]
-        results = [future.result() for future in futures]
-    correctness = [result["correctness"] for result in results]
-    probs = [result["prob"] for result in results]
-    thinks = [result["think"] for result in results]
-    return correctness, probs, thinks
+        probs = [future.result() for future in futures]
+    return probs
 
 
 if __name__ == "__main__":
@@ -128,52 +118,70 @@ if __name__ == "__main__":
     dataset_name = sys.argv[2]
     model_name = sys.argv[3]
     qid_info = load_data(dataset_name)
-    qid_preds, qid_pred_cnt = load_preds(method_name, dataset_name, model_name)
+    qid_preds, _ = load_preds(method_name, dataset_name, model_name)
     print(len(qid_preds))
     verifier = os.getenv("MODEL_ABBR")
     output_dir = f"results/{verifier}/{dataset_name}"
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"{method_name}_{model_name}_cot.json")
+    output_file = os.path.join(output_dir, f"{method_name}_{model_name}_GenRM-CoT.json")
     eval_dir = f"eval_results/{dataset_name}/{method_name}/{model_name}"
     qid_sql_acc_file = (
         f"eval_results/{dataset_name}/{method_name}/{model_name}/gp_sql_acc.json"
     )
     qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
 
-    eval_base = json.load(open(os.path.join(eval_dir, "exec.json"), "r"))
-    qid_to_be_checked = []
-    for qid, res in eval_base.items():
-        if res["upper_acc"] == 0 or res["lower_acc"] == 1:
-            continue
-        qid_to_be_checked.append(int(qid))
-    print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
-
     if os.path.exists(output_file):
         qid_sqls_probs = json.load(open(output_file, "r"))
     else:
         qid_sqls_probs = {}
+
+    eval_base = json.load(open(os.path.join(eval_dir, "majority.json"), "r"))
+    qid_to_be_checked = []
+    for qid, res in eval_base.items():
+        if res["upper_acc"] == 0 or res["lower_acc"] == 1 or qid in qid_sqls_probs:
+            continue
+        qid_to_be_checked.append(int(qid))
+    print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
+
+    db_memory = Memory()
+
     for qid, preds in qid_preds.items():
         if qid in qid_sqls_probs or str(qid) in qid_sqls_probs:
             continue
         if qid not in qid_to_be_checked:
-            continue
-        if qid not in qid_info:
             continue
         start_time = time.time()
         info = qid_info[qid]
         question = info["question"]
         evidence = info["evidence"]
         gt_sql = info["SQL"]
+        db_name = info["db_id"]
+
+        if db_name not in db_memory.memory:
+            db = Database(dataset_name, db_name)
+            db_memory.add(db_name, db)
+            print("=====joinable columns=====")
+            joinable_column_sets = set()
+            for key, values in db.joinable_columns.items():
+                joinable_column_sets.add(frozenset(values))
+            for column_set in joinable_column_sets:
+                print(f"{column_set}")
+            # print(db.display())
+            print("\n" * 5)
+        else:
+            db = db_memory.get(db_name)
+
+        sql_collection = SQLCollection(preds, db, info)
+        schema = sql_collection.schema_note
 
         if len(preds) > 0:
             prompts = []
-            freq = []
             for sql in preds:
                 for _ in range(N):
-                    prompts.append(format_prompt(question, evidence, sql))
-                freq
-            correctness, probs, thinks = llm_check(prompts)
+                    prompts.append(format_prompt(question, evidence, schema, sql))
+            probs = llm_check(prompts)
             probs = np.array(probs).reshape(len(preds), N)
+            probs_raw = np.round(probs, 5).tolist()
             probs = np.round(np.mean(probs, axis=1), 5).tolist()
             # if len(qid_sqls_probs) == 0:
             #     print(prompts[0])
@@ -198,11 +206,13 @@ if __name__ == "__main__":
             "selected_sql": selected_sql,
             "selected_acc": selected_acc,
             "sqls": preds,
-            # "correctness": correctness,
-            # "thinks": thinks,
             "probs": probs,
+            "probs_raw": probs_raw,
             "time_cost": time.time() - start_time,
         }
 
         with open(output_file, "w") as f:
             json.dump(qid_sqls_probs, f, indent=2)
+
+    with open(output_file, "w") as f:
+        json.dump(qid_sqls_probs, f, indent=2)

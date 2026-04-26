@@ -7,6 +7,9 @@ import json
 import os
 import time
 from dotenv import load_dotenv
+from parser import SQLCollection
+from memory import Memory
+from database import Database
 
 load_dotenv(override=True)
 
@@ -19,8 +22,12 @@ client = OpenAI(
 N = 3
 
 
-def format_prompt(question, evidence, pred_sql):
+def format_prompt(question, evidence, schema, pred_sql):
     prompt = f"""You are a SQL and natural language semantic analysis expert. Given a natural language query (NL query), related supplementary information (evidence), and a generated SQL query, analyze whether the generated SQL query is correct.
+
+Database Schema:
+{schema}
+
 Query: {question}
 Evidence: {evidence}
 Generated SQL: {pred_sql}
@@ -79,25 +86,28 @@ if __name__ == "__main__":
     verifier = os.getenv("MODEL_ABBR")
     output_dir = f"results/{verifier}/{dataset_name}"
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"{method_name}_{model_name}_probs.json")
+    output_file = os.path.join(output_dir, f"{method_name}_{model_name}_GenRM.json")
     eval_dir = f"eval_results/{dataset_name}/{method_name}/{model_name}"
     qid_sql_acc_file = (
         f"eval_results/{dataset_name}/{method_name}/{model_name}/gp_sql_acc.json"
     )
     qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
 
-    eval_base = json.load(open(os.path.join(eval_dir, "exec.json"), "r"))
-    qid_to_be_checked = []
-    for qid, res in eval_base.items():
-        if res["upper_acc"] == 0 or res["lower_acc"] == 1:
-            continue
-        qid_to_be_checked.append(int(qid))
-    print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
-
     if os.path.exists(output_file):
         qid_sqls_probs = json.load(open(output_file, "r"))
     else:
         qid_sqls_probs = {}
+
+    eval_base = json.load(open(os.path.join(eval_dir, "majority.json"), "r"))
+    qid_to_be_checked = []
+    for qid, res in eval_base.items():
+        if res["upper_acc"] == 0 or res["lower_acc"] == 1 or qid in qid_sqls_probs:
+            continue
+        qid_to_be_checked.append(int(qid))
+    print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
+
+    db_memory = Memory()
+
     for qid, preds in qid_preds.items():
         if qid in qid_sqls_probs or str(qid) in qid_sqls_probs:
             continue
@@ -108,14 +118,33 @@ if __name__ == "__main__":
         question = info["question"]
         evidence = info["evidence"]
         gt_sql = info["SQL"]
+        db_name = info["db_id"]
+
+        if db_name not in db_memory.memory:
+            db = Database(dataset_name, db_name)
+            db_memory.add(db_name, db)
+            print("=====joinable columns=====")
+            joinable_column_sets = set()
+            for key, values in db.joinable_columns.items():
+                joinable_column_sets.add(frozenset(values))
+            for column_set in joinable_column_sets:
+                print(f"{column_set}")
+            # print(db.display())
+            print("\n" * 5)
+        else:
+            db = db_memory.get(db_name)
+
+        sql_collection = SQLCollection(preds, db, info)
+        schema = sql_collection.schema_note
 
         if len(preds) > 0:
             prompts = []
             for sql in preds:
                 for _ in range(N):
-                    prompts.append(format_prompt(question, evidence, sql))
+                    prompts.append(format_prompt(question, evidence, schema, sql))
             probs = llm_check(prompts)
             probs = np.array(probs).reshape(len(preds), N)
+            probs_raw = np.round(probs, 5).tolist()
             probs = np.round(np.mean(probs, axis=1), 5).tolist()
             # if len(qid_sqls_probs) == 0:
             #     print(prompts[0])
@@ -141,8 +170,12 @@ if __name__ == "__main__":
             "selected_acc": selected_acc,
             "sqls": preds,
             "probs": probs,
+            "probs_raw": probs_raw,
             "time_cost": time.time() - start_time,
         }
 
         with open(output_file, "w") as f:
             json.dump(qid_sqls_probs, f, indent=2)
+
+    with open(output_file, "w") as f:
+        json.dump(qid_sqls_probs, f, indent=2)

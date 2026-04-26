@@ -199,12 +199,12 @@ class SQLCollection:
             time_cost = time.time() - start_time
             if res == "Time Out" or res == "Unexecutable":
                 continue
-            if (
-                len(res) == 0
-                or len(res) == 1
-                and (len(res[0]) == 0 or len(res[0]) == 1 and res[0][0] is None)
-            ):
-                continue
+            # if (
+            #     len(res) == 0
+            #     or len(res) == 1
+            #     and (len(res[0]) == 0 or len(res[0]) == 1 and res[0][0] is None)
+            # ):
+            #     continue
             sql_results[sql] = res
             sql_times[sql] = time_cost
             sql_columns[sql] = cols
@@ -216,6 +216,8 @@ class SQLCollection:
             if sql not in self.exe_results:
                 continue
             subsql_nodes, views, tables, columns = parse_sql(sql)
+            tables = [t.lower() for t in tables]
+            columns = [col.lower() for col in columns]
             exec_res = self.exe_results[sql]
             exec_time = self.sql_times[sql]
             exec_columns = self.sql_columns[sql]
@@ -264,6 +266,9 @@ class SQLCollection:
                         and col_name not in table_columns[tb_name]
                     ):
                         table_columns[tb_name].append(col_name)
+        for tb in self.tables:
+            if tb not in table_columns and tb in self.db.tables:
+                table_columns[tb].extend(self.db.tables[tb].primary_keys)
         return table_columns
 
     def prefilter_by_tables(self):

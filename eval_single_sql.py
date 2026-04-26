@@ -289,3 +289,4 @@ if __name__ == "__main__":
     print(
         f"Acc2: {np.mean(lower_acc2_list) * 100:.2f}%, {np.mean(upper_acc2_list) * 100:.2f}%"
     )
+    print(f"Diff Cases: {sum(upper_acc1_list) - sum(lower_acc1_list)}")

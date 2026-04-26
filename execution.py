@@ -57,7 +57,7 @@ def generate_exec_note(sql_node: SQLNode, db: Database) -> Tuple[str, int]:
         note = "[Error] The execution is unexecutable."
         warning_cnt = 100
     elif len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
-        note = "[Warning] The execution is successful but the returned rows are empty, which might result from the incorrect filtering conditions or the incorrect join conditions."
+        note = "[Warning] The execution is successful but the returned rows are empty."
         warning_cnt = 10
     # elif (
     #     len(exec_res) == 1

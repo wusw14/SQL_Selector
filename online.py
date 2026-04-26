@@ -58,18 +58,15 @@ if __name__ == "__main__":
     qid_pred, qid_sql_cnt = load_preds(
         args.method_name, args.dataset_name, args.model_name
     )
-    rule_collection = load_rule_collection(
-        "results/birddev/alphasql/iterative_rules/full_dev/rule_with_cond.json"
-    )
+    qid_db = {qid: info["db_id"] for qid, info in qid_info.items()}
+    rule_file = "results/birddev/alphasql/iterative_rules/full_dev/rule_with_cond.json"
+    rule_collection = load_rule_collection(rule_file, qid_db)
     rule_qid_preds, _ = load_all_preds(args)
     rule_qid_preds = {
         qid: preds
         for qid, preds in rule_qid_preds.items()
         if qid in rule_collection.qids
     }
-    representation_model = Representation(rule_qid_preds)
-    query_vectors = representation_model.query_vectors
-    print(f"len(query_vectors): {len(query_vectors)}")
     print(f"len(qid_info): {len(qid_info)}")
     print(f"len(qid_pred): {len(qid_pred)}")
     print(f"len(qid_sql_cnt): {len(qid_sql_cnt)}")
@@ -79,17 +76,21 @@ if __name__ == "__main__":
     qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{args.selector}.json")
-    if os.path.exists(output_file):  #  and "debug" not in args.selector:
+    if os.path.exists(output_file) and "debug" not in args.selector:
         with open(output_file, "r") as f:
             results = json.load(f)
     else:
         results = {}
     print(f"processed {len(results)} questions")
 
-    eval_base = json.load(open(os.path.join(eval_dir, "exec.json"), "r"))
+    eval_base = json.load(open(os.path.join(eval_dir, "majority.json"), "r"))
     qid_to_be_checked = []
     for qid, res in eval_base.items():
-        if res["upper_acc"] == 0 or res["lower_acc"] == 1:
+        if (
+            res["upper_acc"] == 0
+            or res["lower_acc"] == 1
+            or (qid in results and len(results[qid].get("sql_logs", [])) > 0)
+        ):
             continue
         qid_to_be_checked.append(int(qid))
     print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
@@ -103,8 +104,8 @@ if __name__ == "__main__":
     for qid, preds in qid_pred.items():
         # if int(qid) not in [352, 423, 433, 479, 507, 685, 694, 959, 1009, 1241, 1510]:
         #     continue
-        if str(qid) in results:
-            continue
+        # if str(qid) in results:
+        #     continue
         if qid not in qid_to_be_checked:
             continue
         if qid not in qid_info:
@@ -144,20 +145,20 @@ if __name__ == "__main__":
         for sql, exec_res in sql_collection.exe_results.items():
             if exec_res == "Time Out" or exec_res == "Unexecutable":
                 continue
-            if len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
-                continue
+            # if len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
+            #     continue
             exec_res_set.add(frozenset(exec_res))
 
+        result = dict(info)
         if len(exec_res_set) <= 1:
             if len(sql_collection.sqls) == 0:
-                selected_sql = "Error SQL"
+                selected_sql = preds[0]
             else:
                 selected_sql = sql_collection.sqls[0]
-            results[qid] = {
-                "sql_logs": [],
-                "selected_sql": selected_sql,
-                "time_cost": time.time() - start_time,
-            }
+            result["selected_sql"] = selected_sql
+            result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
+            result["time_cost"] = time.time() - start_time
+            results[str(qid)] = result
             continue
         print(f"[QID]: {qid}, [DB Name]: {db_name}")
         print(f"[Question]: {question}")
@@ -182,24 +183,21 @@ if __name__ == "__main__":
 
         print("=====Grouping=====")
         sql_cnt = qid_sql_cnt.get(qid, {})
-        grouped_sql_nodes, filtered_group_cnt = group_sql_nodes(sql_nodes, sql_cnt)
+        grouped_sql_nodes, filtered_group_cnt = group_sql_nodes(
+            sql_nodes, sql_cnt, filtering=False
+        )
         print(f"filtered groups: {len(grouped_sql_nodes)}")
         if len(grouped_sql_nodes) <= 1:
             selected_sql = sql_nodes[0].org_sql
-            results[qid] = {
-                "selected_sql": selected_sql,
-                "selected_acc": sql_acc_dict.get(selected_sql, 0),
-                "time_cost": time.time() - start_time,
-                "sql_logs": [],
-                "comparison_notes": [],
-            }
+            result["selected_sql"] = selected_sql
+            result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
+            result["time_cost"] = time.time() - start_time
+            results[str(qid)] = result
             continue
 
         print("=====Rule-based Selection=====")
-        rep = get_representation(preds)
-        # rules = rule_collection.retrieve(rep, top_k=10)
         sqls = [sql_node.org_sql for sql_node in sql_nodes]
-        rules = rule_collection.retrieve_relevant(sqls, qid)
+        rules = rule_collection.retrieve_relevant(sqls, qid, question)
         print(rules)
         sql_node_votes = rule_based_selection(
             sql_collection, sql_nodes, question, evidence, rules
@@ -209,10 +207,18 @@ if __name__ == "__main__":
         print(sql_node_votes)
         filtered_sql_nodes = []
         for grouped_nodes in grouped_sql_nodes:
+            flag = False
             for sql_node in grouped_nodes:
                 if sql_node_votes[sql_node] == max_vote:
                     filtered_sql_nodes.append(sql_node)
+                    flag = True
                     break
+            if flag == False:
+                for sql_node in grouped_nodes:
+                    if sql_node_votes[sql_node] == max_vote - 1:
+                        filtered_sql_nodes.append(sql_node)
+                        flag = True
+                        break
         print(f"[DEBUG] Filtered SQL Nodes: {len(filtered_sql_nodes)}")
 
         print("=====Pairwise Selection=====")
@@ -249,7 +255,9 @@ if __name__ == "__main__":
             #     selected_sql = sql_node.org_sql
             exec_stats = {
                 "rows": len(sql_node.exec_res),
-                "columns": len(sql_node.exec_res[0]),
+                "columns": (
+                    len(sql_node.exec_res[0]) if len(sql_node.exec_res) > 0 else 0
+                ),
                 "exec_time": sql_node.exec_time,
             }
             sql_logs.append(
@@ -264,14 +272,13 @@ if __name__ == "__main__":
                     "rule_note": sql_node.rule_note,
                 }
             )
-        result = dict(info)
         result["selected_sql"] = selected_sql
         result["selected_acc"] = sql_acc_dict.get(selected_sql, 0)
         result["time_cost"] = time.time() - start_time
         result["rules"] = rules
         result["comparison_notes"] = comparison_notes
         result["sql_logs"] = sql_logs
-        results[qid] = result
+        results[str(qid)] = result
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
     with open(output_file, "w") as f:

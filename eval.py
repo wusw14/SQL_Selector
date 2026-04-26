@@ -71,8 +71,9 @@ def load_qid_sqls(file_name):
                 ):
                     sqls.append(item["sql"])
         else:
-            for item in res["sql_logs"]:
-                sqls.append(item["sql"])
+            if "sql_logs" in res:
+                for item in res["sql_logs"]:
+                    sqls.append(item["sql"])
         if len(sqls) == 0:
             qid_sqls[int(qid)] = [sql]
         else:
@@ -150,6 +151,20 @@ def refine_selection(file_name, args):
     return qid_sqls, qid_selected
 
 
+def load_qid_sqls_genrm(file_name):
+    results = json.load(open(file_name))
+    qid_sqls = {}
+    qid_selected = {}
+    for qid, item in results.items():
+        qid = int(qid)
+        sqls = item["sqls"]
+        probs = item["probs"]
+        sqls, probs = zip(*sorted(zip(sqls, probs), key=lambda x: x[1], reverse=True))
+        qid_selected[qid] = sqls[0]
+        qid_sqls[qid] = sqls
+    return qid_sqls, qid_selected
+
+
 def load_selected(args):
     if args.selector == "majority":
         qid_unique_preds, qid_sql_cnt = load_preds(
@@ -169,6 +184,9 @@ def load_selected(args):
         else:
             raise ValueError(f"Invalid method name: {args.method_name}")
         qid_sqls, qid_selected = load_minbug_qid_sqls(file_name)
+    elif "GenRM" in args.selector:
+        file_name = f"results/Qwen3.5/{args.dataset_name}/{args.method_name}_{args.model_name}_{args.selector}.json"
+        qid_sqls, qid_selected = load_qid_sqls_genrm(file_name)
     elif "exhaustive" in args.selector:
         file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
         qid_sqls, qid_selected = refine_selection(file_name, args)
@@ -321,9 +339,9 @@ if __name__ == "__main__":
     method_name = f"{args.method_name}({args.model_name})"
     output_list = [f"{method_name:^30}"]
     output_list.append(f"{args.selector:^20}")
-    output_list.append(f"{lower_acc_ratio:.2f}%")
-    output_list.append(f"{upper_acc_ratio:.2f}%")
-    output_list.append(f"{maj_lower_acc_ratio:.2f}%")
-    output_list.append(f"{maj_upper_acc_ratio:.2f}%")
-    output_list.append(f"{selected_acc_ratio:.2f}%")
+    output_list.append(f"{lower_acc_ratio:.2f}")
+    output_list.append(f"{upper_acc_ratio:.2f}")
+    # output_list.append(f"{maj_lower_acc_ratio:.2f}%")
+    # output_list.append(f"{maj_upper_acc_ratio:.2f}%")
+    output_list.append(f"{selected_acc_ratio:.2f}")
     print(" | ".join(output_list))

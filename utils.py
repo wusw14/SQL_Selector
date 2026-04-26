@@ -9,7 +9,9 @@ def execute_sql_wrapper(
     sql, db_path, timeout, return_columns: bool = False, normalized: bool = False
 ):
     try:
-        res = func_timeout(timeout, execute_sql, args=(sql, db_path, return_columns))
+        res = func_timeout(
+            timeout, execute_sql, args=(sql, db_path, return_columns, normalized)
+        )
     except FunctionTimedOut:
         print(f"SQL:\n{sql}\nTime Out!")
         print("-" * 30)
@@ -53,7 +55,7 @@ def execute_sql(
                         row_normalized.append(round(float(value), 2))
                     else:
                         row_normalized.append(value)
-                result.append(row_normalized)
+                result.append(tuple(row_normalized))
         if return_columns:
             columns = [description[0] for description in cursor.description]
             result = (result, columns)

@@ -349,6 +349,13 @@ def inter_group_selection(
                 sql_node_votes[sql_node2] += 0.5
                 continue
             cover_flag = False
+            if len(sql_node1.exec_res) == 0 or len(sql_node2.exec_res) == 0:
+                pairs.append((sql_node1, sql_node2))
+                comparison_prompt = get_prompt(
+                    base_info, sql_node1, sql_node2, rule_mode, rules
+                )
+                comparison_prompts.append(comparison_prompt)
+                continue
             if len(sql_node1.exec_res[0]) > len(sql_node2.exec_res[0]):
                 cover_flag = if_align_exec_res_with_gt(
                     sql_node1.exec_res, sql_node2.exec_res
@@ -377,7 +384,7 @@ def inter_group_selection(
     for i, (sql_node1, sql_node2) in enumerate(pairs):
         llm_response = llm_responses[i]
         response = parse_json(llm_response)
-        if type(response) == dict:
+        if type(response) == dict and "better_sql" in response:
             better_sql = response["better_sql"]
             if better_sql == "SQL1":
                 sql_node_votes[sql_node1] += 1
@@ -730,7 +737,7 @@ def align_exec_res(exec_res, cand_exec_res_list):
 
 
 def if_align_exec_res_with_gt(exec_res, gt_exec_res) -> bool:
-    if len(exec_res) != len(gt_exec_res):
+    if len(exec_res) != len(gt_exec_res) or len(gt_exec_res) == 0 or len(exec_res) == 0:
         return False
     df_gt = pd.DataFrame(
         gt_exec_res, columns=[f"col_{i}" for i in range(len(gt_exec_res[0]))]
