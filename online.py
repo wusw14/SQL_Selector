@@ -102,8 +102,8 @@ if __name__ == "__main__":
     db_memory = Memory()
     flag = False
     for qid, preds in qid_pred.items():
-        # if int(qid) not in [352, 423, 433, 479, 507, 685, 694, 959, 1009, 1241, 1510]:
-        #     continue
+        if int(qid) not in [628, 769, 794] and len(results) >= 10:
+            continue
         # if str(qid) in results:
         #     continue
         if qid not in qid_to_be_checked:
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         syntax_time = time.time() - start_time
 
         print("=====Rule-based Selection=====")
-        sqls = [sql_node.org_sql for sql_node in sql_nodes]
+        sqls = [gp_sql_nodes[0].org_sql for gp_sql_nodes in grouped_sql_nodes]
         rules = rule_collection.retrieve_relevant(sqls, qid, question)
         print(rules)
         rule_retrieval_time = time.time() - start_time - syntax_time
@@ -296,7 +296,5 @@ if __name__ == "__main__":
         results[str(qid)] = result
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
-        if len(results) >= 10:
-            exit()
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)

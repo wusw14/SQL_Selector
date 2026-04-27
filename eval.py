@@ -339,8 +339,8 @@ if __name__ == "__main__":
     method_name = f"{args.method_name}({args.model_name})"
     output_list = [f"{method_name:^30}"]
     output_list.append(f"{args.selector:^20}")
-    output_list.append(f"{lower_acc_ratio:.2f}")
-    output_list.append(f"{upper_acc_ratio:.2f}")
+    # output_list.append(f"{lower_acc_ratio:.2f}")
+    # output_list.append(f"{upper_acc_ratio:.2f}")
     # output_list.append(f"{maj_lower_acc_ratio:.2f}%")
     # output_list.append(f"{maj_upper_acc_ratio:.2f}%")
     output_list.append(f"{selected_acc_ratio:.2f}")

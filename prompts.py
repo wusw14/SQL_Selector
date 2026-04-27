@@ -273,13 +273,13 @@ def get_rule_relevance_prompt(
 
 Analysis Protocol:
 1. Direct Mapping: Does the SQL explicitly implement a logic that matches the hint's trigger conditon?
-2. Logical Necessity: Would the SQL be incorrect if this hint were ignored?
+2. Logical Necessity: Would applying this hint make the resulting SQL more accurate and robust, prevent a common data logic error, or resolve an ambiguity? (Note: A hint acts as expert domain knowledge).
 
 Instructions:
 Evaluate if the Condition is a critical requirement for the given NL Query and SQL Set.
 1. Answer "Yes" only if the condition is explicitly triggered by the query logic AND the SQL implementation.
-2. Answer "No" if the condition is merely tangentially related, redundant, or if the SQL does not strictly require this specific hint to be valid.
-3. If the relationship is ambiguous or the SQL only partially meets the criteria, answer "Unsure".
+2. Answer "No" if the condition is not related to the query logic or the SQL implementation.
+3. If the relationship is ambiguous, answer "Unsure".
 
 Output Format:
 {{

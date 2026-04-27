@@ -238,7 +238,7 @@ def syntax_level_selection(
 
 def group_sql_nodes(
     sql_nodes: List[SQLNode], sql_cnt: Dict[str, int], filtering: bool = True
-) -> List[List[SQLNode]]:
+) -> Tuple[List[List[SQLNode]], List[int]]:
     grouped_sql_nodes = defaultdict(list)
     for sql_node in sql_nodes:
         grouped_sql_nodes[frozenset(sql_node.exec_res)].append(sql_node)
@@ -948,7 +948,6 @@ def rule_based_selection(
         score = 0
         for j, rule in enumerate(rules):
             response = responses[i * len(rules) + j]
-            print(response)
             answer = parse_json(response)
             if type(answer) != dict or "violation" not in answer:
                 score += 0.5

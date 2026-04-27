@@ -1,9 +1,9 @@
 import os
 
-dataset_name = "spidertest"
+dataset_name = "birddev"
 
 selector_list = [
-    "majority",
+    # "majority",
     # "GenRM",
     # "GenRM-CoT",
     # "chase",
@@ -11,9 +11,10 @@ selector_list = [
     # "agentar2",
     # "agentar3",
     # "hint_random",
-    # "hint_wo_keyword",
-    # "hint_wo_semantic",
+    "hint_wo_keyword",
+    "hint_wo_semantic",
     # "rule_0420",
+    "rule_0426",
 ]
 for model_name in ["7B", "14B"]:
     for selector in selector_list:
