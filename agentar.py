@@ -43,7 +43,7 @@ if __name__ == "__main__":
     args = parse_option()
     qid_info = load_data(args.dataset_name)
     # set seed
-    random.seed(42 + int(args.selector[-1]))
+    random.seed(42 + int(args.selector.split("_")[-1][-1]))
     # get results based on the results of chase.json
     output_dir = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}"
     eval_dir = f"eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}"

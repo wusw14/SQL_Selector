@@ -15,6 +15,7 @@ from loader import load_all_preds, load_data
 from representation import Representation
 from sklearn.metrics import silhouette_score
 from collections import defaultdict
+import time
 
 
 GENERAL_RULES = [
@@ -162,8 +163,8 @@ def load_rule_collection(filename, qid_db):
             item["mode"],
             item["source_cases"],
             item["source_reps"],
-            item["nl_cond"],
-            item["keywords"],
+            item["nl_cond"] if "nl_cond" in item else None,
+            item["keywords"] if "keywords" in item else [],
         )
         rules.append(rule_obj)
     rule_collection = RuleCollection(rules, qid_db)
@@ -200,8 +201,19 @@ def integrate_rule_by_llm(rules: List[Rule]) -> List[Rule]:
     rule_texts = [rule.text for rule in rules]
     prompt = get_rule_integration_prompt2(rule_texts)
     print(f"[DEBUG][prompt]\n{prompt}\n--------------------------------\n")
-    response = llm_check([prompt], llm="deepseek")[0]
-    response = parse_json(response)
+    error_cnt = 0
+    while error_cnt < 3:
+        response = llm_check([prompt], llm="deepseek")[0]
+        response = parse_json(response)
+        if type(response) == dict:
+            break
+        else:
+            error_cnt += 1
+            print(f"response: {response}")
+            print(f"error_cnt: {error_cnt}")
+            print("-" * 100 + "\n" * 5)
+            time.sleep(1)
+
     integrated_rules = []
     for rule_indices, integrated_rule in response.items():
         print(rule_indices)
@@ -252,98 +264,96 @@ def gen_hint_condition(rule: Rule, query: str, evidence: str, sqls: List[str]) -
     return rule
 
 
-# if __name__ == "__main__":
-#     database = "full_dev"
-#     rule_file = f"results/birddev/alphasql/iterative_rules/{database}/post_process.json"
-#     args = parse_option()
-#     qid_preds, qid_sql_acc = load_all_preds(args)
-#     qid_info = load_data(args.dataset_name)
-#     """
-#     results = json.load(open(rule_file, "r"))
-#     qid_preds_with_rules = {}
-#     qid_rules = defaultdict(list)
-#     for qid, result in results.items():
-#         if len(result["rules"]) == 0:
-#             continue
-#         rule_scores = result["rule_scores"]
-#         for rule, score_dict in rule_scores.items():
-#             pos_scores = score_dict["pos_scores"]
-#             neg_scores = score_dict["neg_scores"]
-#             pos_avg = np.mean(pos_scores)
-#             neg_avg = np.mean(neg_scores)
-#             if (
-#                 score_dict["generality"] == 1
-#                 and score_dict["clarity"] == 1
-#                 and pos_avg > 0.9
-#                 and pos_avg > neg_avg
-#             ):
-#                 qid_preds_with_rules[int(qid)] = qid_preds[int(qid)]
-#                 qid_rules[int(qid)].append(rule)
-#     representation_model = Representation(qid_preds_with_rules)
-#     query_vectors = representation_model.query_vectors
-#     rule_objs = []
-#     for qid, rules in qid_rules.items():
-#         for rule in rules:
-#             rep = query_vectors[int(qid)]
-#             rep = list(rep)
-#             rule_obj = Rule(rule, "generated", [int(qid)], [rep])
-#             rule_objs.append(rule_obj)
-#     for t in range(2):
-#         print(f"len(rule_objs): {len(rule_objs)}")
-#         org_size = len(rule_objs)
-#         rule_objs = merge(rule_objs, representation_model.emb_model)
-#         new_size = len(rule_objs)
-#         print(f"org_size: {org_size}, new_size: {new_size}")
-#         rule_collection = RuleCollection(rule_objs)
-#         # save the merged rules to the file
-#         rules = []
-#         for rule_obj in rule_objs:
-#             rules.append(
-#                 {
-#                     "text": rule_obj.text,
-#                     "mode": rule_obj.mode,
-#                     "source_cases": rule_obj.source_cases,
-#                     "source_reps": rule_obj.source_reps,
-#                 }
-#             )
-#         output_file = f"results/birddev/alphasql/iterative_rules/{database}/merged_rules{t+1}.json"
-#         with open(output_file, "w") as f:
-#             json.dump(rules, f, indent=2)
-#         if org_size - new_size <= 10:
-#             print(f"Stop at t={t+1}")
-#             break
-#     """
-# rule_file = (
-#     f"results/birddev/alphasql/iterative_rules/{database}/low_quality_rules.json"
-# )
-# low_quality_rules = json.load(open(rule_file, "r"))
-# rules = []
-# for rule_text, qid in low_quality_rules.items():
-#     rule_obj = Rule(rule_text, "low_quality", [int(qid)], [])
-#     rules.append(rule_obj)
-# rule_collection = RuleCollection(rules, {})
-# # rule_collection = load_rule_collection(rule_file)
-# rule_with_cond = []
-# for rule in rule_collection.rules:
-#     info = qid_info[rule.source_cases[0]]
-#     query = info["question"]
-#     evidence = info["evidence"]
-#     sqls = qid_preds[rule.source_cases[0]][:5]
-#     rule_obj = gen_hint_condition(rule, query, evidence, sqls)
-#     print(f"rule: {rule.text}")
-#     print(f"nl_cond: {rule.nl_cond}")
-#     print(f"keywords: {rule.keywords}")
-#     print("-" * 100 + "\n" * 5)
-#     rule_with_cond.append(
-#         {
-#             "text": rule_obj.text,
-#             "nl_cond": rule_obj.nl_cond,
-#             "keywords": rule_obj.keywords,
-#             "mode": rule_obj.mode,
-#             "source_cases": rule_obj.source_cases,
-#             "source_reps": rule_obj.source_reps,
-#         }
-#     )
-#     output_file = f"results/birddev/alphasql/iterative_rules/{database}/low_quality_rule_with_cond.json"
-#     with open(output_file, "w") as f:
-#         json.dump(rule_with_cond, f, indent=2)
+if __name__ == "__main__":
+    database = "full_dev"
+    args = parse_option()
+    rule_file = f"results/{args.dataset_name}/alphasql/iterative_rules/{database}/post_process.json"
+    qid_preds, qid_sql_acc = load_all_preds(args)
+    qid_info = load_data(args.dataset_name)
+    results = json.load(open(rule_file, "r"))
+    qid_preds_with_rules = {}
+    qid_rules = defaultdict(list)
+
+    for qid, result in results.items():
+        if len(result["rules"]) == 0:
+            continue
+        rule_scores = result["rule_scores"]
+        for rule, score_dict in rule_scores.items():
+            pos_scores = score_dict["pos_scores"]
+            neg_scores = score_dict["neg_scores"]
+            pos_avg = np.mean(pos_scores)
+            neg_avg = np.mean(neg_scores)
+            if (
+                score_dict["generality"] == 1
+                and score_dict["clarity"] == 1
+                and pos_avg > 0.9
+                and pos_avg > neg_avg
+            ):
+                qid_preds_with_rules[int(qid)] = qid_preds[int(qid)]
+                qid_rules[int(qid)].append(rule)
+    representation_model = Representation(qid_preds_with_rules)
+    query_vectors = representation_model.query_vectors
+    rule_objs = []
+    for qid, rules in qid_rules.items():
+        for rule in rules:
+            rep = query_vectors[int(qid)]
+            rep = list(rep)
+            rule_obj = Rule(rule, "generated", [int(qid)], [rep])
+            rule_objs.append(rule_obj)
+    for t in range(1):
+        print(f"len(rule_objs): {len(rule_objs)}")
+        org_size = len(rule_objs)
+        rule_objs = merge(rule_objs, representation_model.emb_model)
+        new_size = len(rule_objs)
+        print(f"org_size: {org_size}, new_size: {new_size}")
+        # rule_collection = RuleCollection(rule_objs)
+        # save the merged rules to the file
+        rules = []
+        for rule_obj in rule_objs:
+            rules.append(
+                {
+                    "text": rule_obj.text,
+                    "mode": rule_obj.mode,
+                    "source_cases": rule_obj.source_cases,
+                    "source_reps": rule_obj.source_reps,
+                }
+            )
+        output_file = f"results/{args.dataset_name}/alphasql/iterative_rules/{database}/merged_rules{t+1}.json"
+        with open(output_file, "w") as f:
+            json.dump(rules, f, indent=2)
+        if org_size - new_size <= 10:
+            print(f"Stop at t={t+1}")
+            break
+
+    rule_file = f"results/{args.dataset_name}/alphasql/iterative_rules/{database}/merged_rules1.json"
+    # integrated_rules = json.load(open(rule_file, "r"))
+    # rules = []
+    # for rule_text, qid in integrated_rules.items():
+    #     rule_obj = Rule(rule_text, "integrated", [int(qid)], [])
+    #     rules.append(rule_obj)
+    # rule_collection = RuleCollection(rules, {})
+    rule_collection = load_rule_collection(rule_file, {})
+    rule_with_cond = []
+    for rule in rule_collection.rules:
+        info = qid_info[rule.source_cases[0]]
+        query = info["question"]
+        evidence = info["evidence"]
+        sqls = qid_preds[rule.source_cases[0]][:5]
+        rule_obj = gen_hint_condition(rule, query, evidence, sqls)
+        print(f"rule: {rule.text}")
+        print(f"nl_cond: {rule_obj.nl_cond}")
+        print(f"keywords: {rule_obj.keywords}")
+        print("-" * 100 + "\n" * 5)
+        rule_with_cond.append(
+            {
+                "text": rule_obj.text,
+                "nl_cond": rule_obj.nl_cond,
+                "keywords": rule_obj.keywords,
+                "mode": rule_obj.mode,
+                "source_cases": rule_obj.source_cases,
+                "source_reps": rule_obj.source_reps,
+            }
+        )
+        output_file = f"results/{args.dataset_name}/alphasql/iterative_rules/{database}/rule_with_cond.json"
+        with open(output_file, "w") as f:
+            json.dump(rule_with_cond, f, indent=2)

@@ -1,20 +1,15 @@
 import os
 
-dataset_name = "birddev"
+dataset_name = "spidertest"
 
 selector_list = [
-    # "majority",
-    # "GenRM",
-    # "GenRM-CoT",
-    # "chase",
-    # "agentar1",
-    # "agentar2",
-    # "agentar3",
-    # "hint_random",
-    "hint_wo_keyword",
-    "hint_wo_semantic",
-    # "rule_0420",
-    "rule_0426",
+    "majority",
+    "GenRM",
+    "GenRM-CoT",
+    "chase",
+    "agentar_v1,agentar_v2,agentar_v3",
+    "rule_samedb_v1,rule_samedb_v2,rule_samedb_v3",
+    "rule_diffdb_v1,rule_diffdb_v2,rule_diffdb_v3",
 ]
 for model_name in ["7B", "14B"]:
     for selector in selector_list:

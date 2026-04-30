@@ -165,14 +165,14 @@ def load_qid_sqls_genrm(file_name):
     return qid_sqls, qid_selected
 
 
-def load_selected(args):
-    if args.selector == "majority":
+def load_selected(args, selector):
+    if selector == "majority":
         qid_unique_preds, qid_sql_cnt = load_preds(
             args.method_name, args.dataset_name, args.model_name
         )
         qid_sqls = qid_unique_preds
         qid_selected = {qid: None for qid in qid_sqls.keys()}
-    elif args.selector == "minbug":
+    elif selector == "minbug":
         if args.method_name == "sql-r1":
             file_name = f"../SQL-R1/results/{args.dataset_name}-generated_sql_{args.model_name}_bugchecked.json"
         elif args.method_name == "alphasql":
@@ -184,14 +184,11 @@ def load_selected(args):
         else:
             raise ValueError(f"Invalid method name: {args.method_name}")
         qid_sqls, qid_selected = load_minbug_qid_sqls(file_name)
-    elif "GenRM" in args.selector:
-        file_name = f"results/Qwen3.5/{args.dataset_name}/{args.method_name}_{args.model_name}_{args.selector}.json"
+    elif "GenRM" in selector:
+        file_name = f"results/Qwen3.5/{args.dataset_name}/{args.method_name}_{args.model_name}_{selector}.json"
         qid_sqls, qid_selected = load_qid_sqls_genrm(file_name)
-    elif "exhaustive" in args.selector:
-        file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
-        qid_sqls, qid_selected = refine_selection(file_name, args)
     else:
-        file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{args.selector}.json"
+        file_name = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}/{selector}.json"
         qid_sqls, qid_selected = load_qid_sqls(file_name)
     return qid_sqls, qid_selected
 
@@ -203,7 +200,6 @@ if __name__ == "__main__":
         args.method_name, args.dataset_name, args.model_name
     )
 
-    qid_sqls, qid_selected = load_selected(args)
     # print(f"========={args.selector}========")
     # print(f"len(qid_sqls): {len(qid_sqls)}")
     # print(f"len(qid_selected): {len(qid_selected)}")
@@ -218,130 +214,126 @@ if __name__ == "__main__":
     gp_sql_acc_file = f"{output_dir}/gp_sql_acc.json"
     qid_gp_sql_acc = json.load(open(gp_sql_acc_file, "r"))
 
-    lower_acc_sum, upper_acc_sum = 0, 0
-    maj_lower_acc_sum, maj_upper_acc_sum = 0, 0
-    selected_acc_sum = 0
-    db_cnt = defaultdict(int)
-    # if os.path.exists(output_file):
-    #     with open(output_file, "r") as f:
-    #         eval_dict = json.load(f)
-    # else:
-    eval_dict = {}
-
-    for qid, sqls in qid_sqls.items():
-        if str(qid) in eval_dict:
-            continue
-        if qid not in qid_info:
-            continue
-        if len(sqls) == 0:
-            continue
-        selected_sql = qid_selected.get(qid, sqls[0])
-        sql_cnt = qid_sql_cnt.get(qid, {})
-        info = qid_info[qid]
-        question = info["question"]
-        evidence = info["evidence"]
-        gt_sql = info["SQL"]
-        db_id = info["db_id"]
-        db_path = f"../datasets/bird/dev/dev_databases/{db_id}/{db_id}.sqlite"
-        gp_sql_acc = qid_gp_sql_acc.get(str(qid), [])
-        gp_votes = {}
-        gp_acc = {}
-        max_vote = 0
-        selected_acc = 0
-        checked_sql = []
-        for gp, sql_acc in enumerate(gp_sql_acc):
-            gp_sqls = sql_acc["sqls"]
-            if args.llm_check:
-                acc = sql_acc["acc2"]
-            else:
-                acc = sql_acc["acc1"]
+    selector_list = args.selector.split(",")
+    selector_acc_list = []
+    for selector in selector_list:
+        qid_sqls, qid_selected = load_selected(args, selector)
+        lower_acc_sum, upper_acc_sum = 0, 0
+        maj_lower_acc_sum, maj_upper_acc_sum = 0, 0
+        selected_acc_sum = 0
+        eval_dict = {}
+        for qid, info in qid_info.items():
+            if qid not in qid_selected:
+                continue
+            sqls = qid_sqls.get(qid, [])
+            if len(sqls) == 0:
+                continue
+            selected_sql = qid_selected.get(qid, sqls[0])
+            sql_cnt = qid_sql_cnt.get(qid, {})
+            info = qid_info[qid]
+            gp_sql_acc = qid_gp_sql_acc.get(str(qid), [])
+            gp_votes = {}
+            gp_acc = {}
+            max_vote = 0
+            selected_acc = 0
+            checked_sql = []
+            for gp, sql_acc in enumerate(gp_sql_acc):
+                gp_sqls = sql_acc["sqls"]
+                if args.llm_check:
+                    acc = sql_acc["acc2"]
+                else:
+                    acc = sql_acc["acc1"]
+                vote = 0
+                for sql in gp_sqls:
+                    if sql in sqls:
+                        vote += sql_cnt.get(sql, 1)
+                        checked_sql.append(sql)
+                    if sql == selected_sql:
+                        selected_acc = acc
+                if vote > 0:
+                    gp_votes[gp] = vote
+                    gp_acc[gp] = acc
+                    max_vote = max(max_vote, vote)
+            new_gp = len(gp_acc) + 1
             vote = 0
-            for sql in gp_sqls:
-                if sql in sqls:
+            for sql in sqls:
+                if sql not in checked_sql:
                     vote += sql_cnt.get(sql, 1)
                     checked_sql.append(sql)
-                if sql == selected_sql:
-                    selected_acc = acc
-            if vote > 0:
-                gp_votes[gp] = vote
-                gp_acc[gp] = acc
-                max_vote = max(max_vote, vote)
-        new_gp = len(gp_acc) + 1
-        vote = 0
-        for sql in sqls:
-            if sql not in checked_sql:
-                vote += sql_cnt.get(sql, 1)
-                checked_sql.append(sql)
-                gp_acc[new_gp] = 0
-                gp_votes[new_gp] = vote
-        max_vote = max(max_vote, vote)
-        if len(gp_acc) == 0:
-            continue
-        lower_acc = min(gp_acc.values())
-        upper_acc = max(gp_acc.values())
-        maj_lower_acc, maj_upper_acc = 1, 0
-        max_vote_cnt = 0
-        for gp, vote in gp_votes.items():
-            if vote == max_vote:
-                maj_lower_acc = min(maj_lower_acc, gp_acc[gp])
-                maj_upper_acc = max(maj_upper_acc, gp_acc[gp])
-                max_vote_cnt += 1
-        if args.selector in ["majority", "minbug", "exec", "join", "exhaustive"]:
-            if max_vote_cnt > 1:
-                selected_acc = maj_upper_acc / max_vote_cnt
-            else:
-                selected_acc = maj_upper_acc
-        eval_dict[qid] = {
-            "upper_acc": upper_acc,
-            "lower_acc": lower_acc,
-            "maj_lower_acc": maj_lower_acc,
-            "maj_upper_acc": maj_upper_acc,
-            "selected_acc": selected_acc,
-        }
-        # if selected_acc != upper_acc:
-        #     print(
-        #         f"qid: {qid}, upper_acc: {upper_acc}, lower_acc: {lower_acc}, maj_lower_acc: {maj_lower_acc}, maj_upper_acc: {maj_upper_acc}, selected_acc: {selected_acc}"
-        #     )
-        if args.save_eval:
-            with open(output_file, "w") as f:
-                json.dump(eval_dict, f, indent=2, ensure_ascii=False)
+                    gp_acc[new_gp] = 0
+                    gp_votes[new_gp] = vote
+            max_vote = max(max_vote, vote)
+            if len(gp_acc) == 0:
+                continue
+            lower_acc = min(gp_acc.values())
+            upper_acc = max(gp_acc.values())
+            maj_lower_acc, maj_upper_acc = 1, 0
+            maj_acc = 0
+            max_vote_cnt = 0
+            for gp, vote in gp_votes.items():
+                if vote == max_vote:
+                    maj_lower_acc = min(maj_lower_acc, gp_acc[gp])
+                    maj_upper_acc = max(maj_upper_acc, gp_acc[gp])
+                    maj_acc += gp_acc[gp]
+                    max_vote_cnt += 1
+            if args.selector in ["majority"]:
+                if max_vote_cnt > 1:
+                    selected_acc = maj_acc / max_vote_cnt
+                else:
+                    selected_acc = maj_upper_acc
+            eval_dict[qid] = {
+                "upper_acc": upper_acc,
+                "lower_acc": lower_acc,
+                "maj_lower_acc": maj_lower_acc,
+                "maj_upper_acc": maj_upper_acc,
+                "selected_acc": selected_acc,
+            }
+            if args.save_eval:
+                with open(output_file, "w") as f:
+                    json.dump(eval_dict, f, indent=2, ensure_ascii=False)
 
-    if args.selector != "majority":
-        eval_base = json.load(open(os.path.join(output_dir, "majority.json"), "r"))
-    else:
-        eval_base = {}
-    for qid in qid_info:
-        if qid not in eval_dict and str(qid) not in eval_dict:
-            try:
-                eval_dict[qid] = eval_base[str(qid)]
-            except Exception as e:
-                # print(f"Error: {e}")
-                eval_dict[qid] = {
-                    "upper_acc": 0,
-                    "lower_acc": 0,
-                    "maj_lower_acc": 0,
-                    "maj_upper_acc": 0,
-                    "selected_acc": 0,
-                }
+        if args.selector != "majority":
+            eval_base = json.load(open(os.path.join(output_dir, "majority.json"), "r"))
+        else:
+            eval_base = {}
+        for qid in qid_info:
+            if qid not in eval_dict and str(qid) not in eval_dict:
+                try:
+                    eval_dict[qid] = eval_base[str(qid)]
+                except Exception as e:
+                    # print(f"Error: {e}")
+                    eval_dict[qid] = {
+                        "upper_acc": 0,
+                        "lower_acc": 0,
+                        "maj_lower_acc": 0,
+                        "maj_upper_acc": 0,
+                        "selected_acc": 0,
+                    }
 
-    # print(f"len(eval_dict): {len(eval_dict)}")
-    for qid, res in eval_dict.items():
-        upper_acc_sum += res["upper_acc"]
-        lower_acc_sum += min(res["lower_acc"], res["upper_acc"])
-        maj_lower_acc_sum += min(res["maj_lower_acc"], res["maj_upper_acc"])
-        maj_upper_acc_sum += res["maj_upper_acc"]
-        selected_acc_sum += res["selected_acc"]
-    upper_acc_ratio = upper_acc_sum / len(qid_info) * 100
-    lower_acc_ratio = lower_acc_sum / len(qid_info) * 100
-    maj_lower_acc_ratio = maj_lower_acc_sum / len(qid_info) * 100
-    maj_upper_acc_ratio = maj_upper_acc_sum / len(qid_info) * 100
-    selected_acc_ratio = selected_acc_sum / len(qid_info) * 100
+        # print(f"len(eval_dict): {len(eval_dict)}")
+        for qid, res in eval_dict.items():
+            upper_acc_sum += res["upper_acc"]
+            lower_acc_sum += min(res["lower_acc"], res["upper_acc"])
+            maj_lower_acc_sum += min(res["maj_lower_acc"], res["maj_upper_acc"])
+            maj_upper_acc_sum += res["maj_upper_acc"]
+            selected_acc_sum += res["selected_acc"]
+        upper_acc_ratio = upper_acc_sum / len(qid_info) * 100
+        lower_acc_ratio = lower_acc_sum / len(qid_info) * 100
+        maj_lower_acc_ratio = maj_lower_acc_sum / len(qid_info) * 100
+        maj_upper_acc_ratio = maj_upper_acc_sum / len(qid_info) * 100
+        selected_acc_ratio = selected_acc_sum / len(qid_info) * 100
+        selector_acc_list.append(selected_acc_ratio)
+    avg_acc = sum(selector_acc_list) / len(selector_acc_list)
     method_name = f"{args.method_name}({args.model_name})"
     output_list = [f"{method_name:^30}"]
-    output_list.append(f"{args.selector:^20}")
+    if len(selector_list) > 1:
+        selector_name = selector_list[0].replace("_v1", "")
+    else:
+        selector_name = selector_list[0]
+    output_list.append(f"{selector_name:^20}")
     # output_list.append(f"{lower_acc_ratio:.2f}")
     # output_list.append(f"{upper_acc_ratio:.2f}")
     # output_list.append(f"{maj_lower_acc_ratio:.2f}%")
     # output_list.append(f"{maj_upper_acc_ratio:.2f}%")
-    output_list.append(f"{selected_acc_ratio:.2f}")
+    output_list.append(f"{avg_acc:.2f}")
     print(" | ".join(output_list))
