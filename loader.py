@@ -89,9 +89,9 @@ def load_artic_text2sql_preds(dataset_name: str, model_name: str):
 
 
 def load_all_preds(args):
-    llm_list = ["Qwen2.5-7B", "Qwen3-30B", "Qwen2.5-32B"]
+    llm_list = ["Qwen2.5-7B", "Qwen3-30B"]
     qid_preds = defaultdict(list)
-    qid_sql_acc = defaultdict(dict)
+    qid_sql_acc = defaultdict(list)
     for llm in llm_list:
         qid_pred, _ = load_preds("alphasql", args.dataset_name, llm)
         qid_gp_sql_acc_file = (
@@ -102,13 +102,13 @@ def load_all_preds(args):
             qid_preds[qid].extend(preds)
 
         for qid, gp_sql_acc in qid_gp_sql_acc.items():
-            sql_acc = {}
-            for item in gp_sql_acc:
-                sqls = item["sqls"]
-                acc = item["acc1"]
-                for sql in sqls:
-                    sql_acc[sql] = acc
-            qid_sql_acc[int(qid)].update(sql_acc)
+            # sql_acc = {}
+            # for item in gp_sql_acc:
+            #     sqls = item["sqls"]
+            #     acc = item["acc1"]
+            #     for sql in sqls:
+            #         sql_acc[sql] = acc
+            qid_sql_acc[int(qid)].extend(gp_sql_acc)
     # deduplicate the preds
     for qid, preds in qid_preds.items():
         qid_preds[qid] = list(set(preds))

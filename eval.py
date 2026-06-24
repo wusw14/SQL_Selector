@@ -184,6 +184,15 @@ def load_selected(args, selector):
         else:
             raise ValueError(f"Invalid method name: {args.method_name}")
         qid_sqls, qid_selected = load_minbug_qid_sqls(file_name)
+    elif "DPC" in selector:
+        filename = f"results/DPC/{args.method_name}_{args.dataset_name}_{args.model_name}_DPC.json"
+        qid_selected = json.load(open(filename, "r"))
+        qid_selected = {
+            int(qid): sql
+            for qid, sql in qid_selected.items()
+            if sql is not None and sql != "null"
+        }
+        qid_sqls = {qid: [sql] for qid, sql in qid_selected.items()}
     elif "GenRM" in selector:
         file_name = f"results/Qwen3.5/{args.dataset_name}/{args.method_name}_{args.model_name}_{selector}.json"
         qid_sqls, qid_selected = load_qid_sqls_genrm(file_name)

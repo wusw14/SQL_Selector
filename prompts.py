@@ -290,6 +290,46 @@ Output Format:
     return prompt
 
 
+def get_rule_rank_prompt(question, hints, sqls):
+    k = len(sqls)
+    hint_str = "\n".join(
+        [
+            f"Hint {i}: {hint.text}, Trigger Condition: {hint.nl_cond}"
+            for i, hint in enumerate(hints)
+        ]
+    )
+    prompt = f"""Your task is to identify the critical hints that help distinguish the correct SQL query from a set of candidates based on a natural language (NL) question.
+
+##Instructions:## 
+1. Analyze the provided NL Query and the Candidate SQL Set.
+2. Review the list of Hints provided.
+3. Select the hints that are effective at resolving the logic ambiguities between the candidate SQLs. and whose trigger conditions are relevant to the NL query.
+4. Ignore hints that do not help in choosing between the specific candidate SQLs provided.
+5. **CRITICAL SELECTION LIMIT**: You can select a MAXIMUM of 5 hints. If fewer than 5 hints are relevant, only select the relevant ones. Do not force selection to reach 5. If more than 5 hints seem applicable, prioritize and select up to 5 of the most impactful ones that resolve the core SQL ambiguities.
+
+##Input Data:##
+NL Query: {question}
+
+Candidate SQLs: 
+{sqls}
+
+Hints:
+{hint_str}
+
+Output Requirement:
+Return a JSON dictionary with exactly two keys:
+- reason: A brief explanation of why these specific hints were chosen.
+- hint_indices: A list of integers representing the indices of the selected hints.
+
+#Output Format:#
+{{
+  "reason": "brief explaination of why these specific hints were chosen (under 150 tokens).",
+  "hint_indices": [int, int, ...]
+}}
+"""
+    return prompt
+
+
 def get_rule_condition_prompt(
     rule: str, query: str, evidence: str, sqls: List[str]
 ) -> str:
@@ -314,5 +354,72 @@ Return ONLY a valid JSON dictionary with the following structure. Do not include
   "nl_condition": "<short, clear condition, ≤20 words>",
   "sql_keywords": ["keyword1", ..., "keywordn"]
 }}
+"""
+    return prompt
+
+
+def get_rule_logic_cond(rule: str, query: str, evidence: str, sqls: List[str]) -> str:
+    prompt = f"""You are an expert SQL analysis assistant. Your task is to extract the logical condition (pattern) from a given SQL Hint and its corresponding context (NL query, Evidence, and SQL examples) that triggers the Hint.
+
+### TASK DESCRIPTION
+Analyze when the given "Hint" should be considered based on the SQL patterns observed in the context. You need to identify what SQL keywords, functions, or operators strongly indicate that the Hint is applicable.
+
+### FORMATTING RULES FOR `logic_cond`
+1. Separate alternative independent conditions using the pipe symbol `|` (denoting OR).
+2. Within a single condition, if MULTIPLE keywords MUST appear together to trigger the hint, connect them using the ampersand symbol `&` (denoting AND). 
+3. IMPORTANT: Do NOT overuse `&`. If a single SQL keyword/function alone is sufficient to trigger the pattern, just list that keyword without `&`. 
+4. Keywords should be uppercase (e.g., `ROUND`, `LIMIT`, `LIKE`).
+5. The condition MUST ONLY consist of generic SQL keywords, operators, or functions. 
+   - **NEVER** include specific table names (e.g., `Patient`, `Laboratory`).
+   - **NEVER** include specific column names (e.g., `U-PRO`, `Age`, `Birthday`).
+   - **NEVER** include specific literal values (e.g., `1984`, `'SLE'`, `50`).
+
+#### For `nl_cond` (NL Scenario):
+1. **ONE SENTENCE ONLY**: Summarize the rule or business scenario in a single, high-quality English sentence.
+2. **DOMAIN AGNOSTIC**: Focus on the underlying computational logic (e.g., "calculating percentages", "ranking items", "finding historical ages") rather than domain-specific entities (e.g., don't mention "cards", "molecules", or "patients").
+
+### EXPECTED OUTPUT FORMAT
+You must output JSON ONLY. Do not wrap the JSON in any markdown code blocks (like ```json). The structure must be a JSON dictionary with the following keys:
+{{
+  "thought": "Step-by-step reasoning showing how you derived both conditions by stripping away domain-specific tables/columns/values.",
+  "logic_cond": "The formatted abstract SQL logic condition string.",
+  "nl_cond": "The one-sentence generic natural language condition string."
+}}
+
+### EXAMPLES
+
+Example 1:
+Context:
+- Hint: Prefer handling ties explicitly to avoid arbitrarily discarding valid results.
+- NL Query: What is the complete address of the school with the lowest excellence rate?
+- SQLs: ['... ORDER BY ... LIMIT 1', '... ORDER BY ... ROW_NUMBER() ...']
+Output:
+{{
+  "thought": "The user wants the 'lowest' item, which implies a top-1 ranking scenario where ties might occur. In SQL, this is implemented by sorting and truncating, or using row numbering without handling ties. I will exclude domain terms like 'school' or 'excellence rate'.",
+  "logic_cond": "ORDER BY & LIMIT | ORDER BY & ROW_NUMBER",
+  "nl_cond": "When the query asks for the extreme highest or lowest records (top-N) where identical values or ties might exist."
+}}
+
+Example 2:
+Context:
+- Hint: Prefer exact equality over pattern matching for categorical or specific values.
+- NL query: Among the Artifact cards, which are black color?
+- SQLs: ['... WHERE c.originaltype = \'Artifact\'', '... WHERE c.originaltype LIKE \'%Artifact%\'']
+Output:
+{{
+  "thought": "The intent is to filter by definitive categories or codes. The SQL pattern switches between exact match (=) and fuzzy match (LIKE). I will keep the descriptions generic without mentioning 'cards' or 'color'.",
+  "logic_cond": "= | LIKE",
+  "nl_cond": "When filtering records based on strict, predefined categories, discrete codes, or exact match attributes."
+}}
+
+### YOUR TURN
+Now, analyze the following case and output the JSON dictionary.
+
+Context:
+- Hint: {rule}
+- NL query: {query}
+- Evidence: {evidence}
+- SQLs: {sqls}
+Output:
 """
     return prompt

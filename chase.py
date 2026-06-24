@@ -23,16 +23,6 @@ from rule_lib import load_rule_collection
 verifier = os.getenv("MODEL_ABBR")
 
 
-# NL, SQL, execution results
-rules = [
-    "Adhere strictly to instructions in the evidence, particularly regarding return values and metric calculations.",
-    "Ensure the filters fully match the natural language query—no missing or extra conditions.",
-    "For queries with potential ties, ensure SQL returns all tied records (e.g., use RANK() over ROW_NUMBER(), use max/min over order by xxx limit 1).",
-    "Always group by unique identifiers (e.g., ID) instead of non-unique attributes (e.g., name) to ensure accurate aggregation and avoid merging distinct entities.",
-    "Exclude sentinel values (e.g., NULL, zero) from numeric aggregations when they represent missing or invalid data.",
-]
-
-
 def parse_option():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_name", type=str, default="birddev")
@@ -156,14 +146,45 @@ if __name__ == "__main__":
 
         sql_nodes = syntax_level_selection(sql_collection, question, evidence)
         print("=====Pairwise Selection=====")
+        print("=====Grouping=====")
+        sql_cnt = qid_sql_cnt.get(qid, {})
+        grouped_sql_nodes, filtered_group_cnt = group_sql_nodes(
+            sql_nodes, sql_cnt, filtering=False
+        )
+
+        total = 0
+        max_gp_cnt = 0
+        max_gp_sql_nodes = None
+        sampled_sql_nodes = []
+        sampled_grouped_sql_nodes = []
+        sql_node_maj_vote = {}
+        for gp_sql_nodes in grouped_sql_nodes:
+            gp_cnt = 0
+            for sql_node in gp_sql_nodes:
+                gp_cnt += sql_cnt.get(sql_node.org_sql, 1)
+            if len(gp_sql_nodes) > 3:
+                gp_sampled = np.random.choice(gp_sql_nodes, 3, replace=False).tolist()
+                sampled_sql_nodes.extend(gp_sampled)
+                sampled_grouped_sql_nodes.append(gp_sampled)
+            else:
+                sampled_sql_nodes.extend(gp_sql_nodes)
+                sampled_grouped_sql_nodes.append(gp_sql_nodes)
+            total += gp_cnt
+            for sql_node in gp_sql_nodes:
+                sql_node_maj_vote[sql_node] = gp_cnt
+            if gp_cnt > max_gp_cnt:
+                max_gp_cnt = gp_cnt
+                max_gp_sql_nodes = sampled_grouped_sql_nodes[-1]
+        print(f"total: {total}, max_gp_cnt: {max_gp_cnt}")
+
         # TODO: for those achieves the highest score in rule-based selection
         # For each group, select one SQL
         filtered_sql_node_votes, comparison_notes = inter_group_selection(
             sql_collection,
             question,
             evidence,
-            sql_collection.sql_nodes,
-            rules,
+            sampled_sql_nodes,
+            [],
             args.rule_mode,
         )
 

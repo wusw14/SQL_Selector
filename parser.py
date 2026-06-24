@@ -199,12 +199,12 @@ class SQLCollection:
             time_cost = time.time() - start_time
             if res == "Time Out" or res == "Unexecutable":
                 continue
-            # if (
-            #     len(res) == 0
-            #     or len(res) == 1
-            #     and (len(res[0]) == 0 or len(res[0]) == 1 and res[0][0] is None)
-            # ):
-            #     continue
+            if (
+                len(res) == 0
+                or len(res) == 1
+                and (len(res[0]) == 0 or len(res[0]) == 1 and res[0][0] is None)
+            ):
+                continue
             sql_results[sql] = res
             sql_times[sql] = time_cost
             sql_columns[sql] = cols

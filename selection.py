@@ -932,6 +932,7 @@ def rule_based_selection(
     question: str,
     evidence: str,
     rules: List[str],
+    weights: List[float],
 ):
     schema_note = collect_schema_info(sql_collection.table_columns, sql_collection.db)
     prompts = []
@@ -950,22 +951,22 @@ def rule_based_selection(
             response = responses[i * len(rules) + j]
             answer = parse_json(response)
             if type(answer) != dict or "violation" not in answer:
-                score += 0.5
+                score += 0.5 * weights[j]
                 sql_node.score_each_rule.append(0.5)
             elif answer["violation"] == "No":
-                score += 1
+                score += 1 * weights[j]
                 sql_node.score_each_rule.append(1)
             elif answer["violation"] == "Yes":
                 score += 0
                 sql_node.score_each_rule.append(0)
                 sql_node.rule_note.append(f"Rule {j}, Reason: {answer['reason']}")
             else:
-                score += 0.5
+                score += 0.5 * weights[j]
                 sql_node.score_each_rule.append(0.5)
-            if type(answer) != dict or "relevance" not in answer:
-                sql_node.relevance_each_rule.append("Unsure")
-            else:
-                sql_node.relevance_each_rule.append(answer["relevance"])
+            # if type(answer) != dict or "relevance" not in answer:
+            #     sql_node.relevance_each_rule.append("Unsure")
+            # else:
+            #     sql_node.relevance_each_rule.append(answer["relevance"])
         sql_node.rule_score = score
         max_score = max(max_score, score)
     sql_node_votes = defaultdict(float)

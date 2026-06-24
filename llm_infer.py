@@ -27,19 +27,32 @@ def generate_response(prompt, llm="Qwen3-30B"):
         client = rule_gen_client
         model = rule_gen_model
         temperature = 1.0
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            extra_body={
+                "top_k": 20,
+                # "chat_template_kwargs": {"enable_thinking": False},
+                "thinking": {"type": "disabled"},
+                "max_tokens": 400,
+            },
+        )
     else:
         client = base_client
         model = verifier_model
         temperature = 0.7
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        extra_body={
-            "top_k": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
-    )
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            extra_body={
+                "top_k": 20,
+                "chat_template_kwargs": {"enable_thinking": False},
+                # "thinking": {"type": "disabled"},
+                "max_tokens": 400,
+            },
+        )
     return response.choices[0].message.content
 
 

@@ -45,34 +45,37 @@ def parse_option():
         choices=["none", "random", "relevant", "ideal"],
         default="relevant",
     )
+    parser.add_argument(
+        "--retrieval_mode",
+        type=str,
+        choices=["crosscase", "crossdb", "crossds"],
+        default="crosscase",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_option()
     qid_info = load_data(args.dataset_name)
-    # qid_info = {
-    #     qid: info for qid, info in qid_info.items() if info["db_id"] == "superhero"
-    # }
-    # qid_info = {qid: info for qid, info in qid_info.items() if qid == 736}
     qid_pred, qid_sql_cnt = load_preds(
         args.method_name, args.dataset_name, args.model_name
     )
     qid_db = {qid: info["db_id"] for qid, info in qid_info.items()}
-    rule_file = "results/birddev/alphasql/iterative_rules/full_dev/rule_with_cond.json"
+    rule_file = "alphasql/iterative_rules/full_dev/rule_with_cond_v4.json"
+    if args.retrieval_mode != "crossds":
+        rule_file = f"../verifier/results/{args.dataset_name}/{rule_file}"
+    else:
+        if args.dataset_name == "birddev":
+            rule_file = "../verifier/results/spidertest/{rule_file}"
+        else:
+            rule_file = "../verifier/results/birddev/{rule_file}"
     rule_collection = load_rule_collection(rule_file, qid_db)
-    rule_qid_preds, _ = load_all_preds(args)
-    rule_qid_preds = {
-        qid: preds
-        for qid, preds in rule_qid_preds.items()
-        if qid in rule_collection.qids
-    }
     print(f"len(qid_info): {len(qid_info)}")
     print(f"len(qid_pred): {len(qid_pred)}")
     print(f"len(qid_sql_cnt): {len(qid_sql_cnt)}")
     output_dir = f"results/{args.dataset_name}/{args.method_name}/{args.model_name}"
-    eval_dir = f"eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}"
-    qid_sql_acc_file = f"eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}/gp_sql_acc.json"
+    eval_dir = f"../verifier/eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}"
+    qid_sql_acc_file = f"../verifier/eval_results/{args.dataset_name}/{args.method_name}/{args.model_name}/gp_sql_acc.json"
     qid_sql_acc = json.load(open(qid_sql_acc_file, "r"))
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{args.selector}.json")
@@ -86,11 +89,7 @@ if __name__ == "__main__":
     eval_base = json.load(open(os.path.join(eval_dir, "majority.json"), "r"))
     qid_to_be_checked = []
     for qid, res in eval_base.items():
-        if (
-            res["upper_acc"] == 0
-            or res["lower_acc"] == 1
-            or (qid in results and len(results[qid].get("sql_logs", [])) > 0)
-        ):
+        if res["upper_acc"] == 0 or res["lower_acc"] == 1 or (qid in results):
             continue
         qid_to_be_checked.append(int(qid))
     print(f"len(qid_to_be_checked): {len(qid_to_be_checked)}")
@@ -102,10 +101,6 @@ if __name__ == "__main__":
     db_memory = Memory()
     flag = False
     for qid, preds in qid_pred.items():
-        if int(qid) not in [628, 769, 794] and len(results) >= 10:
-            continue
-        # if str(qid) in results:
-        #     continue
         if qid not in qid_to_be_checked:
             continue
         if qid not in qid_info:
@@ -145,8 +140,8 @@ if __name__ == "__main__":
         for sql, exec_res in sql_collection.exe_results.items():
             if exec_res == "Time Out" or exec_res == "Unexecutable":
                 continue
-            # if len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
-            #     continue
+            if len(exec_res) == 0 or len(exec_res) == 1 and len(exec_res[0]) == 0:
+                continue
             exec_res_set.add(frozenset(exec_res))
 
         result = dict(info)
@@ -198,12 +193,16 @@ if __name__ == "__main__":
         syntax_time = time.time() - start_time
 
         print("=====Rule-based Selection=====")
-        sqls = [gp_sql_nodes[0].org_sql for gp_sql_nodes in grouped_sql_nodes]
-        rules = rule_collection.retrieve_relevant(sqls, qid, question)
-        print(rules)
+        all_sqls = [sql_node.org_sql for sql_node in sql_nodes]
+        gp_sqls = [gp_sql_nodes[0].org_sql for gp_sql_nodes in grouped_sql_nodes]
+        rules, weights = rule_collection.retrieve_relevant(
+            gp_sqls, qid, question, evidence, args.retrieval_mode
+        )
+        print(f"[DEBUG] rules: {rules}")
+        print(f"[DEBUG] weights: {weights}")
         rule_retrieval_time = time.time() - start_time - syntax_time
         sql_node_votes = rule_based_selection(
-            sql_collection, sql_nodes, question, evidence, rules
+            sql_collection, sql_nodes, question, evidence, rules, weights
         )
         max_vote = max(sql_node_votes.values())
         print(f"[DEBUG] max vote: {max_vote}")
@@ -218,7 +217,7 @@ if __name__ == "__main__":
                     break
             if flag == False:
                 for sql_node in grouped_nodes:
-                    if sql_node_votes[sql_node] == max_vote - 1:
+                    if sql_node_votes[sql_node] >= max_vote - 1:
                         filtered_sql_nodes.append(sql_node)
                         flag = True
                         break
@@ -296,5 +295,7 @@ if __name__ == "__main__":
         results[str(qid)] = result
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
+        if "debug" in args.selector and len(results) >= 10:
+            break
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
